@@ -170,18 +170,19 @@ const HorarioEditable = () => {
   };
 
   const registrarHistorial = (tipo, datos) => {
-    const ahora = new Date();
-    const registro = {
-      timestamp: ahora.toISOString(),
-      tipo,
-      ...datos
-    };
-    
-    setEstado(prev => ({
-      ...prev,
-      historial: [...prev.historial, registro]
-    }));
+  const ahora = new Date();
+  const registro = {
+    timestamp: ahora.toISOString(),
+    tipo,
+    sector: selectedSector, // Añadir el sector actual
+    ...datos
   };
+  
+  setEstado(prev => ({
+    ...prev,
+    historial: [...prev.historial, registro]
+  }));
+};
 
   const agregarAgente = () => {
     if (nuevoNombre.trim() !== '' && nuevoApellido.trim() !== '') {
