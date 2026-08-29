@@ -1,6 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
 import { BrowserRouter as Router, Route, Routes, Link, useNavigate } from 'react-router-dom';
-import { Plus, Trash2, ArrowUpDown, BarChart2, Upload, Download, Users } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import EstadisticasCasillas from './EstadisticasCasillas';
 import { cargarEstadoInicial, guardarEstado, limpiarEstado } from './utils/storage';
@@ -62,15 +60,22 @@ const HorarioEditable = () => {
   }, [estado]);
 
   // Actualizar horarios al cambiar turno
-  useEffect(() => {
-    setEstado(prev => ({
-      ...prev,
-      config: {
-        ...prev.config,
-        horarios: turnosConfig[selectedShift]
-      }
-    }));
-  }, [selectedShift]);
+ // Reemplazar el useEffect de turnos (línea ~73)
+useEffect(() => {
+  const turnosConfig = {
+    mañana: ['06:00', '07:00', '08:00', '09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00'],
+    tarde: ['15:00', '16:00', '17:00', '18:00', '19:00', '20:00', '21:00', '22:00', '23:00', '00:00'],
+    noche: ['21:00', '22:00', '23:00', '00:00', '01:00', '02:00', '03:00', '04:00', '05:00', '06:00']
+  };
+  
+  setEstado(prev => ({
+    ...prev,
+    config: {
+      ...prev.config,
+      horarios: turnosConfig[selectedShift]
+    }
+  }));
+}, [selectedShift]);
 
   // Timer para refresh horario
   useEffect(() => {
@@ -93,9 +98,8 @@ const HorarioEditable = () => {
     return () => clearInterval(interval);
   }, [ultimoRefresh, estado]);
 
-  const ejecutarRefreshHorario = () => {
-    const horaActual = new Date().getHours();
-    const columnaActual = estado.config.horarios.findIndex(h => parseInt(h) === horaActual);
+  const ejecutarRefreshHorario = useCallback(() => {
+     const columnaActual = estado.config.horarios.findIndex(h => parseInt(h) === new Date().getHours());
     
     if (columnaActual === -1) return;
     
@@ -140,8 +144,26 @@ const HorarioEditable = () => {
     
     // Actualizar foto
     setFotoAnterior(matrizActual.map(fila => [...fila]));
-  };
+  };[estado, selectedSector, fotoAnterior]);
 
+  useEffect(() => {
+  const verificarRefresh = () => {
+    const ahora = new Date();
+    const minutos = ahora.getMinutes();
+    
+    if (minutos === 0 || minutos === 1) {
+      const ultimoCheck = new Date(ultimoRefresh);
+      if (ahora.getTime() - ultimoCheck.getTime() > 30 * 60 * 1000) {
+        ejecutarRefreshHorario();
+        setUltimoRefresh(ahora.toISOString());
+      }
+    }
+  };
+  
+  const interval = setInterval(verificarRefresh, 60000);
+  return () => clearInterval(interval);
+}, [ultimoRefresh, ejecutarRefreshHorario]);
+  
   const intercambiarEquipos = (agenteSalienteId, agenteEntranteId) => {
     setEstado(prev => {
       const nuevosAgentes = prev.agentes.map(agente => {
