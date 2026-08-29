@@ -1,4 +1,6 @@
+import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Route, Routes, Link, useNavigate } from 'react-router-dom';
+import { Plus, Trash2, ArrowUpDown, BarChart2, Upload, Download } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import EstadisticasCasillas from './EstadisticasCasillas';
 import { cargarEstadoInicial, guardarEstado, limpiarEstado } from './utils/storage';
