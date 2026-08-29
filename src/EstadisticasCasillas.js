@@ -1,175 +1,195 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import Papa from 'papaparse';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, TrendingUp, Clock, MapPin } from 'lucide-react';
+import { cargarEstadoInicial } from './utils/storage';
 
 const EstadisticasCasillas = () => {
-  const [estadisticas, setEstadisticas] = useState({ entrada: {}, salida: {} });
-  const [casillasValidas, setCasillasValidas] = useState({ entrada: [], salida: [] });
+  const [estado, setEstado] = useState(null);
   const [agenteSeleccionado, setAgenteSeleccionado] = useState('');
+  const [vistaActual, setVistaActual] = useState('casillas');
   const navigate = useNavigate();
 
-  //Funcion recursiva
-  const procesarArchivos = (archivos) => {
-    let estadisticasTemp = { entrada: {}, salida: {} };
-    let casillasValidasTemp = { entrada: [], salida: [] };
+  useEffect(() => {
+    const estadoCargado = cargarEstadoInicial();
+    if (estadoCargado) {
+      setEstado(estadoCargado);
+    }
+  }, []);
 
-    const procesarArchivo = (index) => {
-      if (index >= archivos.length) {
-        // Filter and clean up statistics
-        ['entrada', 'salida'].forEach(sector => {
-          estadisticasTemp[sector] = Object.fromEntries(
-            Object.entries(estadisticasTemp[sector]).filter(([agente, casillas]) =>
-              !/undefined/i.test(agente) && agente.trim() !== ""
-            )
-          );
+  if (!estado) {
+    return (
+      <div className="p-8 text-center">
+        <p className="text-gray-600">No hay datos disponibles. Importa un archivo CSV primero.</p>
+        <button
+          onClick={() => navigate('/')}
+          className="mt-4 bg-blue-500 text-white px-4 py-2 rounded"
+        >
+          Volver al horario
+        </button>
+      </div>
+    );
+  }
 
-          Object.keys(estadisticasTemp[sector]).forEach(agente => {
-            estadisticasTemp[sector][agente] = Object.fromEntries(
-              Object.entries(estadisticasTemp[sector][agente]).filter(([casilla, valor]) => 
-                valor !== null && valor !== undefined && casilla !== 'undefined' && casilla.trim() !== ""
-              )
-            );
-          });
-
-          casillasValidasTemp[sector] = [...new Set(
-            Object.values(estadisticasTemp[sector]).flatMap(Object.keys)
-          )].filter(casilla => casilla !== 'undefined' && casilla.trim() !== "");
-        });
-
-        setEstadisticas(estadisticasTemp);
-        setCasillasValidas(casillasValidasTemp);
-        return;
-      }
-
-      const archivo = archivos[index];
-
-      Papa.parse(archivo, {
-        complete: (result) => {
-          const datos = result.data;
-          const matrizIndex = datos.findIndex(fila => fila[0] === 'matriz');
-          const encabezados = datos.find(fila => fila[0] === 'encabezado').slice(1);
-          const matriz = datos.slice(matrizIndex).map(fila => fila.slice(1));
-          const sector = encabezados[0].toLowerCase().includes('entrada') ? 'entrada' : 'salida';
-
-          matriz.forEach((fila, filaIndex) => {
-            const casilla = encabezados[filaIndex];
-            if (casilla && casilla.trim() !== '') {
-              if (!casillasValidasTemp[sector].includes(casilla)) {
-                casillasValidasTemp[sector].push(casilla);
-              }
-              
-              fila.forEach((celda) => {
-                if (celda && celda.trim() !== '') {
-                  const [nombre, apellido] = celda.split(' ');
-                  const nombreCompleto = `${nombre} ${apellido}`.trim();
-                  
-                  if (nombreCompleto !== '' && nombreCompleto !== 'undefined undefined') {
-                    if (!estadisticasTemp[sector][nombreCompleto]) {
-                      estadisticasTemp[sector][nombreCompleto] = {};
-                    }
-                    if (!estadisticasTemp[sector][nombreCompleto][casilla]) {
-                      estadisticasTemp[sector][nombreCompleto][casilla] = 0;
-                    }
-                    estadisticasTemp[sector][nombreCompleto][casilla]++;
-                  }
-                }
-              });
-            }
-          });
-
-          procesarArchivo(index + 1);
-        }
-      });
+  const calcularEstadisticasAgente = (agenteId) => {
+    const estadisticas = {
+      entrada: {},
+      salida: {},
+      totalHoras: 0
     };
 
-    procesarArchivo(0);
-  };
+    ['entrada', 'salida'].forEach(sector => {
+      estado.matrices[sector].forEach((fila, filaIndex) => {
+        fila.forEach((celdaAgenteId, colIndex) => {
+          if (celdaAgenteId === agenteId) {
+            const casilla = estado.config.casillas[sector][filaIndex];
+            if (!estadisticas[sector][casilla]) {
+              estadisticas[sector][casilla] = 0;
+            }
+            estadisticas[sector][casilla]++;
+            estadisticas.totalHoras++;
+          }
+        });
+      });
+    });
 
-  const handleFileUpload = (event) => {
-    const archivos = Array.from(event.target.files);
-    procesarArchivos(archivos);
+    return estadisticas;
   };
 
   const prepararDatosGrafico = (sector) => {
-    if (!agenteSeleccionado) {
-      return [];
-    }
+    if (!agenteSeleccionado) return [];
     
-    const agenteData = estadisticas[sector][agenteSeleccionado] || {};
+    const estadisticas = calcularEstadisticasAgente(agenteSeleccionado);
+    const datos = estadisticas[sector];
     
-    return [{
-      nombre: agenteSeleccionado,
-      ...Object.fromEntries(
-        Object.entries(agenteData).filter(([casilla, valor]) =>
-          casillasValidas[sector].includes(casilla) && valor !== null && valor !== undefined
-        )
-      )
-    }];
+    return Object.entries(datos).map(([casilla, horas]) => ({
+      casilla,
+      horas
+    }));
   };
 
-  
-  // Función para generar la etiqueta de la casilla
-  const generarEtiquetaCasilla = (casilla, index) => `Casilla ${index + 1}`;
+  const agenteActual = estado.agentes.find(a => a.id === agenteSeleccionado);
+  const estadisticasAgente = agenteSeleccionado ? 
+    calcularEstadisticasAgente(agenteSeleccionado) : null;
 
   return (
     <div className="p-4 bg-gray-100 min-h-screen">
-      <button
-        onClick={() => navigate('/')}
-        className="mb-4 flex items-center text-blue-500 hover:text-blue-700"
-      >
-        <ArrowLeft size={20} className="mr-2" />
-        Volver al horario
-      </button>
+      <div className="max-w-7xl mx-auto">
+        <button
+          onClick={() => navigate('/')}
+          className="mb-4 flex items-center text-blue-500 hover:text-blue-700"
+        >
+          <ArrowLeft size={20} className="mr-2" />
+          Volver al horario
+        </button>
 
-      <h1 className="text-2xl font-bold mb-4">Estadísticas de Casillas por Agente</h1>
+        <h1 className="text-2xl font-bold mb-6">Estadísticas de Agentes</h1>
 
-      <input
-        type="file"
-        onChange={handleFileUpload}
-        multiple
-        accept=".csv"
-        className="mb-4 p-2 border rounded"
-      />
-
-      <select
-        value={agenteSeleccionado}
-        onChange={(e) => setAgenteSeleccionado(e.target.value)}
-        className="mb-4 p-2 border rounded"
-      >
-        <option value="">Selecciona un agente</option>
-        {Object.keys({...estadisticas.entrada, ...estadisticas.salida}).map((agente) => (
-          <option key={agente} value={agente}>
-            {agente}
-          </option>
-        ))}
-      </select> 
-      {agenteSeleccionado && (
-        <div className="mt-4 space-y-8">
-          {['entrada', 'salida'].map(sector => (
-            <div key={sector}>
-              <h2 className="text-xl font-semibold mb-2 capitalize">{sector}</h2>
-              <ResponsiveContainer width="100%" height={400}>
-                <BarChart data={prepararDatosGrafico(sector)}>
-                  <XAxis dataKey="nombre" />
-                  <YAxis />
-                  <Tooltip />
-                  <Legend />
-                  {casillasValidas[sector].map((casilla, index) => (
-                    <Bar 
-                      key={casilla} 
-                      dataKey={casilla} 
-                      fill={`hsl(${index * 30}, 70%, 50%)`}
-                      name={generarEtiquetaCasilla(casilla, index)}
-                    />
-                  ))}
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          ))}
+        {/* Selector de agente */}
+        <div className="bg-white p-4 rounded shadow mb-6">
+          <label className="block text-sm font-medium mb-2">
+            Seleccionar Agente
+          </label>
+          <select
+            value={agenteSeleccionado}
+            onChange={(e) => setAgenteSeleccionado(e.target.value)}
+            className="w-full p-2 border rounded"
+          >
+            <option value="">Selecciona un agente</option>
+            {estado.agentes.map(agente => (
+              <option key={agente.id} value={agente.id}>
+                {agente.apellido}, {agente.nombre} - {agente.equipo}
+              </option>
+            ))}
+          </select>
         </div>
-      )}
+
+        {agenteSeleccionado && agenteActual && (
+          <>
+            {/* Resumen general */}
+            <div className="grid grid-cols-3 gap-4 mb-6">
+              <div className="bg-white p-4 rounded shadow">
+                <div className="flex items-center">
+                  <Clock size={20} className="text-blue-500 mr-2" />
+                  <h3 className="font-semibold">Total Horas</h3>
+                </div>
+                <p className="text-2xl font-bold mt-2">{estadisticasAgente.totalHoras}h</p>
+              </div>
+              
+              <div className="bg-white p-4 rounded shadow">
+                <div className="flex items-center">
+                  <MapPin size={20} className="text-green-500 mr-2" />
+                  <h3 className="font-semibold">Equipo Actual</h3>
+                </div>
+                <p className="text-2xl font-bold mt-2">{agenteActual.equipo}</p>
+              </div>
+              
+              <div className="bg-white p-4 rounded shadow">
+                <div className="flex items-center">
+                  <TrendingUp size={20} className="text-purple-500 mr-2" />
+                  <h3 className="font-semibold">Promedio Horas/Día</h3>
+                </div>
+                <p className="text-2xl font-bold mt-2">
+                  {(estadisticasAgente.totalHoras / 7).toFixed(1)}h
+                </p>
+              </div>
+            </div>
+
+            {/* Gráficos por sector */}
+            <div className="space-y-6">
+              {['entrada', 'salida'].map(sector => (
+                <div key={sector} className="bg-white p-4 rounded shadow">
+                  <h2 className="text-xl font-semibold mb-4 capitalize">
+                    {sector === 'entrada' ? 'Entradas' : 'Salidas'}
+                  </h2>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <BarChart data={prepararDatosGrafico(sector)}>
+                      <XAxis dataKey="casilla" />
+                      <YAxis />
+                      <Tooltip />
+                      <Legend />
+                      <Bar dataKey="horas" fill="#3B82F6" name="Horas" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              ))}
+            </div>
+
+            {/* Historial de cambios */}
+            {estado.historial && estado.historial.length > 0 && (
+              <div className="mt-6 bg-white p-4 rounded shadow">
+                <h2 className="text-xl font-semibold mb-4">Historial de Cambios</h2>
+                <div className="space-y-2 max-h-96 overflow-y-auto">
+                  {estado.historial
+                    .filter(h => {
+                      const agenteAnterior = estado.agentes.find(a => a.id === h.agenteAnterior);
+                      const agenteNuevo = estado.agentes.find(a => a.id === h.agenteNuevo);
+                      return agenteAnterior?.id === agenteSeleccionado || 
+                             agenteNuevo?.id === agenteSeleccionado;
+                    })
+                    .map((historial, index) => {
+                      const agenteAnterior = estado.agentes.find(a => a.id === historial.agenteAnterior);
+                      const agenteNuevo = estado.agentes.find(a => a.id === historial.agenteNuevo);
+                      const casilla = estado.config.casillas[selectedSector]?.[historial.fila] || 
+                                      `Casilla ${historial.fila + 1}`;
+                      
+                      return (
+                        <div key={index} className="flex items-center justify-between p-2 bg-gray-50 rounded">
+                          <span className="text-sm">
+                            {new Date(historial.timestamp).toLocaleTimeString()} - {historial.tipo}
+                          </span>
+                          <span className="text-sm">
+                            {agenteAnterior?.apellido || 'Vacía'} → {agenteNuevo?.apellido || 'Vacía'}
+                          </span>
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 };
