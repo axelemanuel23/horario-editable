@@ -256,55 +256,50 @@ useEffect(() => {
     e.preventDefault();
   };
 
-  const manejarDrop = (e, fila, columna) => {
-    e.preventDefault();
-    const data = JSON.parse(e.dataTransfer.getData('text'));
-    const agenteId = data.agenteId;
+  // Reemplazar la lógica de actualización de horas
+const manejarDrop = (e, fila, columna) => {
+  e.preventDefault();
+  const data = JSON.parse(e.dataTransfer.getData('text'));
+  const agenteId = data.agenteId;
+  
+  const agente = estado.agentes.find(a => a.id === agenteId);
+  if (!agente) return;
+  
+  setEstado(prev => {
+    // Encontrar si el agente estaba en otra celda
+    let agenteMovido = false;
+    const nuevasMatrices = {
+      ...prev.matrices,
+      [selectedSector]: prev.matrices[selectedSector].map((row, rowIndex) =>
+        row.map((celda, colIndex) => {
+          if (rowIndex === fila && colIndex === columna) {
+            return agenteId;
+          }
+          // Si encontramos al agente en otra celda, la limpiamos
+          if (celda === agenteId) {
+            agenteMovido = true;
+            return null;
+          }
+          return celda;
+        })
+      )
+    };
     
-    const agente = estado.agentes.find(a => a.id === agenteId);
-    if (!agente) return;
-    
-    setEstado(prev => {
-      const nuevasMatrices = {
-        ...prev.matrices,
-        [selectedSector]: prev.matrices[selectedSector].map((row, rowIndex) =>
-          row.map((celda, colIndex) => {
-            if (rowIndex === fila && colIndex === columna) {
-              return agenteId;
-            }
-            // Limpiar si el agente estaba en otra celda
-            if (celda === agenteId) {
-              return null;
-            }
-            return celda;
-          })
-        )
-      };
-      
-      // Actualizar horas
-      const nuevosAgentes = prev.agentes.map(a => {
-        if (a.id === agenteId) {
-          return { ...a, horas: a.horas + 1 };
-        }
-        // Si el agente fue removido de una celda
-        const estabaEnCelda = Object.values(prev.matrices).some(matriz =>
-          matriz.some((row, rowIndex) =>
-            row.some((celda, colIndex) => 
-              celda === a.id && 
-              !(rowIndex === fila && colIndex === columna && selectedSector === selectedSector)
-            )
-          )
-        );
-        return estabaEnCelda ? a : { ...a, horas: Math.max(0, a.horas - 1) };
-      });
-      
-      return {
-        ...prev,
-        matrices: nuevasMatrices,
-        agentes: nuevosAgentes
-      };
+    // Actualizar horas
+    const nuevosAgentes = prev.agentes.map(a => {
+      if (a.id === agenteId) {
+        return { ...a, horas: a.horas + 1 };
+      }
+      return a;
     });
-  };
+    
+    return {
+      ...prev,
+      matrices: nuevasMatrices,
+      agentes: nuevosAgentes
+    };
+  });
+};
 
   const manejarClickFicha = (fila, columna) => {
     const agenteId = estado.matrices[selectedSector][fila][columna];
