@@ -36,7 +36,6 @@ const migrarDesdeV1 = () => {
   const matrizV1 = JSON.parse(localStorage.getItem('matriz') || '[]');
   const encabezadosV1 = JSON.parse(localStorage.getItem('encabezadosFilas') || '[]');
   const horariosV1 = JSON.parse(localStorage.getItem('horarios') || '[]');
-  const sectoresDataV1 = JSON.parse(localStorage.getItem('sectoresData') || '[]');
   
   if (agentesV1.length === 0 && matrizV1.length === 0) {
     return null;
