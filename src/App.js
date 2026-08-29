@@ -1,441 +1,322 @@
-import React, { useState, useEffect } from 'react';
-import { BrowserRouter as Router, Route, Routes, Link } from 'react-router-dom';
-import { Plus, Trash2, ArrowUpDown, BarChart2 } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { BrowserRouter as Router, Route, Routes, Link, useNavigate } from 'react-router-dom';
+import { Plus, Trash2, ArrowUpDown, BarChart2, Upload, Download, Users } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
-import Papa from 'papaparse';
 import EstadisticasCasillas from './EstadisticasCasillas';
+import { cargarEstadoInicial, guardarEstado, limpiarEstado } from './utils/storage';
+import { exportarCSV, importarCSV } from './utils/csvHandler';
 
 const colors = [
   'bg-red-500', 'bg-blue-500', 'bg-green-500', 'bg-yellow-500', 'bg-purple-500',
-  'bg-pink-500', 'bg-indigo-500', 'bg-teal-500', 'bg-orange-500', 'bg-cyan-500'
+  'bg-pink-500', 'bg-indigo-500', 'bg-teal-500', 'bg-orange-500', 'bg-cyan-500',
+  'bg-lime-500', 'bg-amber-500', 'bg-emerald-500', 'bg-fuchsia-500', 'bg-rose-500'
 ];
 
-const sectores = ['Micro', 'Corredor', 'Casilla'];
-
+const equipos = ['Micro', 'Corredor'];
 
 const HorarioEditable = () => {
-  const [horarios, setHorarios] = useState(() => {
-    const saved = localStorage.getItem('horarios');
-    return saved ? JSON.parse(saved) : Array(10).fill('');
-  });
-  const [encabezadosFilas, setEncabezadosFilas] = useState(() => {  
-    const saved = localStorage.getItem('encabezadosFilas');
-    return saved ? JSON.parse(saved) : Array(12).fill().map((_, index) => `Casilla ${index + 1}`);
-  });
-  const [matriz, setMatriz] = useState(() => {
-    const saved = localStorage.getItem('matriz');
-    return saved ? JSON.parse(saved) : Array(12).fill().map(() => Array(10).fill(null));
-  });
-  const [agentes, setAgentes] = useState(() => {
-    const saved = localStorage.getItem('agentes');
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [sectoresData, setSectoresData] = useState(() => {
-    const saved = localStorage.getItem('sectoresData');
-    return saved ? JSON.parse(saved) : sectores.map(sector => ({ nombre: sector, agentes: [] }));
+  // Estado principal
+  const [estado, setEstado] = useState(() => {
+    const inicial = cargarEstadoInicial();
+    return inicial || {
+      agentes: [],
+      matrices: {
+        entrada: Array(16).fill().map(() => Array(10).fill(null)),
+        salida: Array(11).fill().map(() => Array(10).fill(null))
+      },
+      config: {
+        horarios: ['06:00', '07:00', '08:00', '09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00'],
+        casillas: {
+          entrada: Array(16).fill().map((_, i) => `Entrada ${i + 1}`),
+          salida: Array(11).fill().map((_, i) => `Salida ${i + 1}`)
+        }
+      },
+      historial: []
+    };
   });
 
-  
+  // Estado UI
+  const [selectedShift, setSelectedShift] = useState('mañana');
+  const [selectedSector, setSelectedSector] = useState('entrada');
+  const [nuevoNombre, setNuevoNombre] = useState('');
+  const [nuevoApellido, setNuevoApellido] = useState('');
+  const [nuevoEquipo, setNuevoEquipo] = useState('Micro');
+  const [ordenamiento, setOrdenamiento] = useState('alfabetico');
   const [confirmationModal, setConfirmationModal] = useState({ show: false, action: null });
   const [selectedHorarioCasilla, setSelectedHorarioCasilla] = useState(null);
   const [horarioTexto, setHorarioTexto] = useState('');
-  const [nuevoNombre, setNuevoNombre] = useState('');
-  const [nuevoApellido, setNuevoApellido] = useState('');
-  const [nuevoSector, setNuevoSector] = useState('Micro');
-  const [ordenamiento, setOrdenamiento] = useState('alfabetico');
+  const [ultimoRefresh, setUltimoRefresh] = useState(() => new Date().toISOString());
+  const [fotoAnterior, setFotoAnterior] = useState(null);
+  const navigate = useNavigate();
 
-  const [selectedShift, setSelectedShift] = useState('mañana');
-  const [selectedSector, setSelectedSector] = useState('entrada');
-  
-  const [importedData, setImportedData] = useState(null);
+  // Configuración de turnos
+  const turnosConfig = {
+    mañana: ['06:00', '07:00', '08:00', '09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00'],
+    tarde: ['15:00', '16:00', '17:00', '18:00', '19:00', '20:00', '21:00', '22:00', '23:00', '00:00'],
+    noche: ['21:00', '22:00', '23:00', '00:00', '01:00', '02:00', '03:00', '04:00', '05:00', '06:00']
+  };
 
+  // Guardar estado en localStorage
   useEffect(() => {
-    if (importedData) {
-      setAgentes(importedData.nuevosAgentes);
-      setEncabezadosFilas(importedData.nuevosEncabezadosFilas);
-      setHorarios(importedData.nuevosHorarios);
-      setMatriz(importedData.nuevaMatriz);
-      setSectoresData(importedData.nuevosSectoresData);
-      setSelectedSector(importedData.selectedSector);
-      setSelectedShift(importedData.selectedShift);
-      setImportedData(null); // Limpiar los datos importados después de usarlos
-    }
-  }, [importedData]);
+    guardarEstado(estado);
+  }, [estado]);
 
+  // Actualizar horarios al cambiar turno
   useEffect(() => {
-    const shiftHorarios = {
-      mañana: ['06:00', '07:00', '08:00', '09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00'],
-      tarde: ['15:00', '16:00', '17:00', '18:00', '19:00', '20:00', '21:00', '22:00', '23:00','00:00'],
-      noche: ['21:00','22:00', '23:00', '00:00', '01:00', '02:00', '03:00', '04:00', '05:00', '06:00']
-    };
-    setHorarios(shiftHorarios[selectedShift]);
+    setEstado(prev => ({
+      ...prev,
+      config: {
+        ...prev.config,
+        horarios: turnosConfig[selectedShift]
+      }
+    }));
   }, [selectedShift]);
 
+  // Timer para refresh horario
   useEffect(() => {
-    const sectorEncabezados = {
-      entrada: Array(12).fill().map((_, index) => `Entrada ${index + 1}`),
-      salida: Array(12).fill().map((_, index) => `Salida ${index + 1}`)
-    };
-    setEncabezadosFilas(sectorEncabezados[selectedSector]);
-  }, [selectedSector]);
-
-  useEffect(() => {
-    localStorage.setItem('horarios', JSON.stringify(horarios));
-    localStorage.setItem('encabezadosFilas', JSON.stringify(encabezadosFilas));
-    localStorage.setItem('matriz', JSON.stringify(matriz));
-    localStorage.setItem('agentes', JSON.stringify(agentes));
-    localStorage.setItem('sectoresData', JSON.stringify(sectoresData));
-  }, [sectoresData, horarios, encabezadosFilas, matriz, agentes]);
-
-
-  const limpiarLocalStorage = () => {
-    localStorage.removeItem('horarios');
-    localStorage.removeItem('encabezadosFilas');
-    localStorage.removeItem('matriz');
-    localStorage.removeItem('agentes');
-    localStorage.removeItem('sectoresData');
-
-    setHorarios(Array(10).fill(''));
-    setEncabezadosFilas(Array(12).fill().map((_, index) => `Casilla ${index + 1}`));
-    setMatriz(Array(12).fill().map(() => Array(10).fill(null)));
-    setAgentes([]);
-    setSectoresData(sectores.map(sector => ({ nombre: sector, agentes: [] })));
-  };
-
-  const exportarCSV = () => {
-    const datosCSV = [
-      // Encabezados
-      ['tipo', 'id', 'nombre', 'apellido', 'horas', 'sector', 'color'],
-      // Datos de los agentes
-      ...agentes.map(agente => ['agente', agente.id, agente.nombre, agente.apellido, agente.horas, agente.sector, agente.color]),
-      // Encabezados de filas
-      ['encabezado', selectedSector, ...encabezadosFilas],
-      // Horarios
-      ['horario', ...horarios],
-      // Matriz
-      ...matriz.map((fila, index) => ['matriz', index, ...fila])
-    ];
-  
-    const csvContent = Papa.unparse(datosCSV);  
-  
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    const fecha = new Date();
-    fecha.setHours(fecha.getHours()-3)
-    const fechaActual = fecha.toISOString().slice(0, 19).replace(/:/g, '-'); // Formato: YYYY-MM-DDTHH-MM-SS
-    const nombreArchivo = `${selectedSector}_${selectedShift}_${fechaActual}.csv`; // Puedes ajustar la extensión del archivo
-    link.setAttribute('download', nombreArchivo);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  // Función para importar la matriz desde un archivo CSV
-  const importarCSV = (event) => {
-    const file = event.target.files[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const csvData = e.target.result;
-      const parsedData = Papa.parse(csvData, { header: false }).data;
+    const verificarRefresh = () => {
+      const ahora = new Date();
+      const horaActual = ahora.getHours();
+      const minutos = ahora.getMinutes();
       
-      const nuevosAgentes = [];
-      let nuevosEncabezadosFilas = [];
-      let nuevosHorarios = [];
-      const nuevaMatriz = [];
-      const nuevosSectoresData = sectores.map(sector => ({ nombre: sector, agentes: [] }));
-      let selectedSector = '';
-      let selectedShift = '';
-
-      parsedData.forEach(fila => {
-        switch(fila[0]) {
-          case 'agente':
-            const agente = {
-              id: fila[1],
-              nombre: fila[2],
-              apellido: fila[3],
-              horas: parseInt(fila[4], 10),
-              sector: fila[5],
-              color: fila[6]
-            };
-            nuevosAgentes.push(agente);
-            const sectorIndex = nuevosSectoresData.findIndex(s => s.nombre === agente.sector);
-            if (sectorIndex !== -1) {
-              nuevosSectoresData[sectorIndex].agentes.push(agente);
-            }
-            break;
-          case 'encabezado':
-            selectedSector = fila[1];
-            nuevosEncabezadosFilas = fila.slice(2);
-            break;
-          case 'horario':
-            nuevosHorarios = fila.slice(1);
-            if (nuevosHorarios[0] === '06:00') selectedShift = 'mañana';
-            else if (nuevosHorarios[0] === '15:00') selectedShift = 'tarde';
-            else if (nuevosHorarios[0] === '21:00') selectedShift = 'noche';
-            break;
-          case 'matriz':
-            nuevaMatriz.push(fila.slice(2).map(celda => celda === '' ? null : celda));
-            break;
-          default:
-            alert("Por alguna razon se fue al default")
-            break;
+      // Refresh en la hora exacta (cuando minutos = 0)
+      if (minutos === 0 || minutos === 1) {
+        const ultimoCheck = new Date(ultimoRefresh);
+        if (ahora.getTime() - ultimoCheck.getTime() > 30 * 60 * 1000) { // Al menos 30 min desde último check
+          ejecutarRefreshHorario();
+          setUltimoRefresh(ahora.toISOString());
         }
-      });
-
-      setImportedData({
-        nuevosAgentes,
-        nuevosEncabezadosFilas,
-        nuevosHorarios,
-        nuevaMatriz,
-        nuevosSectoresData,
-        selectedSector,
-        selectedShift
-      });
+      }
     };
+    
+    const interval = setInterval(verificarRefresh, 60000); // Check cada minuto
+    return () => clearInterval(interval);
+  }, [ultimoRefresh, estado]);
 
-    reader.readAsText(file);
-  };
-
-  const generarTextoHorario = () => {
-    if (selectedHorarioCasilla === null) return;
-    console.log(sectoresData)
-    let texto = ""
-    if(selectedHorarioCasilla === -1 ){
-      texto += `-- Sectores -- \n`
-      sectoresData.forEach((fila, index) => {
-        texto += `${fila.nombre}:\n`
-        fila.agentes.forEach((columna, index) => {
-          texto += ` - ${columna.nombre} ${columna.apellido}\n` 
-        })
-      })
-    }else{
-      texto += `Horario: ${horarios[selectedHorarioCasilla]}\n`;
-      matriz.forEach((fila, indexFila) => {
-        if (fila[selectedHorarioCasilla]) {
-          texto += `Casilla ${indexFila + 1}: ${fila[selectedHorarioCasilla]}\n`;
+  const ejecutarRefreshHorario = () => {
+    const horaActual = new Date().getHours();
+    const columnaActual = estado.config.horarios.findIndex(h => parseInt(h) === horaActual);
+    
+    if (columnaActual === -1) return;
+    
+    const matrizActual = estado.matrices[selectedSector];
+    
+    if (!fotoAnterior) {
+      // Primera foto, no hay nada que comparar
+      setFotoAnterior(matrizActual.map(fila => [...fila]));
+      return;
+    }
+    
+    // Comparar foto anterior con estado actual
+    const cambios = [];
+    matrizActual.forEach((fila, filaIndex) => {
+      fila.forEach((celda, colIndex) => {
+        if (colIndex === columnaActual && celda !== fotoAnterior[filaIndex][colIndex]) {
+          cambios.push({
+            fila: filaIndex,
+            columna: colIndex,
+            agenteAnterior: fotoAnterior[filaIndex][colIndex],
+            agenteNuevo: celda
+          });
         }
       });
-    }
-    setHorarioTexto(texto.trim());
-  }
-
-  const eliminarTextoHorario = () => {
-    setHorarioTexto('');
+    });
+    
+    // Procesar cambios
+    cambios.forEach(cambio => {
+      if (cambio.agenteAnterior && cambio.agenteNuevo) {
+        // Hay relevo - intercambiar equipos
+        intercambiarEquipos(cambio.agenteAnterior, cambio.agenteNuevo);
+        registrarHistorial('relevo', cambio);
+      } else if (cambio.agenteAnterior && !cambio.agenteNuevo) {
+        // Casilla vaciada - retornar al equipo anterior
+        retornarAEquipoAnterior(cambio.agenteAnterior);
+        registrarHistorial('cierre', cambio);
+      } else if (!cambio.agenteAnterior && cambio.agenteNuevo) {
+        // Nueva asignación
+        registrarHistorial('apertura', cambio);
+      }
+    });
+    
+    // Actualizar foto
+    setFotoAnterior(matrizActual.map(fila => [...fila]));
   };
 
-  const editarEncabezadoFila = (index, valor) => {
-    const nuevosEncabezados = [...encabezadosFilas];
-    nuevosEncabezados[index] = valor;
-    setEncabezadosFilas(nuevosEncabezados);
+  const intercambiarEquipos = (agenteSalienteId, agenteEntranteId) => {
+    setEstado(prev => {
+      const nuevosAgentes = prev.agentes.map(agente => {
+        if (agente.id === agenteSalienteId) {
+          const agenteEntrante = prev.agentes.find(a => a.id === agenteEntranteId);
+          return { ...agente, equipo: agenteEntrante.equipo };
+        }
+        return agente;
+      });
+      
+      return { ...prev, agentes: nuevosAgentes };
+    });
+  };
+
+  const retornarAEquipoAnterior = (agenteId) => {
+    setEstado(prev => {
+      const nuevosAgentes = prev.agentes.map(agente => {
+        if (agente.id === agenteId) {
+          return { ...agente, equipo: agente.equipoOriginal };
+        }
+        return agente;
+      });
+      
+      return { ...prev, agentes: nuevosAgentes };
+    });
+  };
+
+  const registrarHistorial = (tipo, datos) => {
+    const ahora = new Date();
+    const registro = {
+      timestamp: ahora.toISOString(),
+      tipo,
+      ...datos
+    };
+    
+    setEstado(prev => ({
+      ...prev,
+      historial: [...prev.historial, registro]
+    }));
   };
 
   const agregarAgente = () => {
     if (nuevoNombre.trim() !== '' && nuevoApellido.trim() !== '') {
-      const color = colors[agentes.length % colors.length];
       const nuevoAgente = {
-        id: uuidv4(), // Generar un ID único para el agente
-        nombre: nuevoNombre,
-        apellido: nuevoApellido,
-        horas: 0,
-        color,
-        sector: nuevoSector
+        id: uuidv4(),
+        nombre: nuevoNombre.trim(),
+        apellido: nuevoApellido.trim(),
+        equipo: nuevoEquipo,
+        equipoOriginal: nuevoEquipo,
+        color: colors[estado.agentes.length % colors.length],
+        horas: 0
       };
-      const nuevosSectoresData = sectoresData.map(sectorData => {
-        if (sectorData.nombre === nuevoSector) {
-          return {
-            ...sectorData,
-            agentes: [...sectorData.agentes, nuevoAgente]
-          };
-        }
-        return sectorData;
-      });
-
-      setSectoresData(nuevosSectoresData);
-
-      setAgentes([...agentes, nuevoAgente]);
+      
+      setEstado(prev => ({
+        ...prev,
+        agentes: [...prev.agentes, nuevoAgente]
+      }));
+      
       setNuevoNombre('');
       setNuevoApellido('');
     }
   };
 
   const eliminarAgente = (id) => {
-    const nuevosAgentes = agentes.filter(agente => agente.id !== id);
-
-     // Eliminar al agente de la matriz
-    const nuevaMatriz = matriz.map(fila => 
-    fila.map(celda => celda === id ? null : celda)
-    );
-
-    const nuevosSectoresData = sectoresData.map(sectorData => ({
-      ...sectorData,
-      agentes: sectorData.agentes.filter(agente => agente.id !== id)
-    }));
-
-    setAgentes(nuevosAgentes);
-    setSectoresData(nuevosSectoresData);
-    setMatriz(nuevaMatriz);
+    setEstado(prev => {
+      // Eliminar de matrices
+      const nuevasMatrices = {
+        entrada: prev.matrices.entrada.map(fila => 
+          fila.map(celda => celda === id ? null : celda)
+        ),
+        salida: prev.matrices.salida.map(fila => 
+          fila.map(celda => celda === id ? null : celda)
+        )
+      };
+      
+      return {
+        ...prev,
+        agentes: prev.agentes.filter(a => a.id !== id),
+        matrices: nuevasMatrices
+      };
+    });
   };
 
-  const manejarDragStart = (e, agente, fila, columna) => {
-    e.dataTransfer.setData('text/plain', JSON.stringify({ agente, fila, columna }));
+  const manejarDragStart = (e, agenteId) => {
+    e.dataTransfer.setData('text/plain', JSON.stringify({ agenteId }));
   };
 
   const manejarDragOver = (e) => {
     e.preventDefault();
   };
 
-  const manejarDrop = (e, fila, columna, nuevoSector = null) => {
+  const manejarDrop = (e, fila, columna) => {
     e.preventDefault();
     const data = JSON.parse(e.dataTransfer.getData('text'));
-    const agenteData = data.agente;
-    const filaOrigen = data.fila;
-    const columnaOrigen = data.columna;
-  
-    if (nuevoSector) {
-      // Actualizar sectoresData para reflejar el cambio de sector
-      const nuevosSectoresData = sectoresData.map(sectorData => {
-        if (sectorData.nombre === agenteData.sector) {
-          return {
-            ...sectorData,
-            agentes: sectorData.agentes.filter(agente => agente.id !== agenteData.id)
-          };
-        } else if (sectorData.nombre === nuevoSector) {
-          return {
-            ...sectorData,
-            agentes: [...sectorData.agentes, { ...agenteData, sector: nuevoSector }]
-          };
-        }
-        return sectorData;
-      });
-      setSectoresData(nuevosSectoresData);
-      // También actualizar la lista de agentes con el nuevo sector
-      const nuevosAgentes = agentes.map(agente =>
-        agente.id === agenteData.id ? { ...agente, sector: nuevoSector } : agente
-      );
-      setAgentes(nuevosAgentes);
-
-    } else {
-      const nuevaMatriz = matriz.map(row => [...row]);
-      const nombreCompleto = `${agenteData.nombre} ${agenteData.apellido}`;
+    const agenteId = data.agenteId;
+    
+    const agente = estado.agentes.find(a => a.id === agenteId);
+    if (!agente) return;
+    
+    setEstado(prev => {
+      const nuevasMatrices = {
+        ...prev.matrices,
+        [selectedSector]: prev.matrices[selectedSector].map((row, rowIndex) =>
+          row.map((celda, colIndex) => {
+            if (rowIndex === fila && colIndex === columna) {
+              return agenteId;
+            }
+            // Limpiar si el agente estaba en otra celda
+            if (celda === agenteId) {
+              return null;
+            }
+            return celda;
+          })
+        )
+      };
       
-      // Función para verificar si el agente ya está en otra fila de la misma columna
-      const agenteYaEnColumna = (col) => nuevaMatriz.some((row, idx) => 
-        idx !== fila && row[col] === nombreCompleto
-      );
-      // Check if it's a move within the matrix
-      if (filaOrigen !== undefined && columnaOrigen !== undefined) {
-        // Movimiento dentro de la matriz
-        if (columna === columnaOrigen) {
-          // Movimiento dentro de la misma columna, permitido sin verificación
-          nuevaMatriz[filaOrigen][columnaOrigen] = null;
-          nuevaMatriz[fila][columna] = nombreCompleto;
-          setMatriz(nuevaMatriz);
-        } else if (nuevaMatriz[fila][columna] === null || nuevaMatriz[fila][columna] === '') {
-          // Movimiento a otra columna vacía
-          if (agenteYaEnColumna(columna)) {
-            alert(`${nombreCompleto} ya está asignado en este horario.`);
-            return;
-          }
-          if (verificarHorasConsecutivas(nuevaMatriz, columna, nombreCompleto)) {
-            setConfirmationModal({
-              show: true,
-              action: () => {
-                nuevaMatriz[filaOrigen][columnaOrigen] = null;
-                nuevaMatriz[fila][columna] = nombreCompleto;
-                setMatriz(nuevaMatriz);
-              }
-            });
-          } else {
-            nuevaMatriz[filaOrigen][columnaOrigen] = null;
-            nuevaMatriz[fila][columna] = nombreCompleto;
-            setMatriz(nuevaMatriz);
-          }
-        } else {
-          alert(`No se puede mover a esta posición. La casilla ya está ocupada por otro agente.`);
+      // Actualizar horas
+      const nuevosAgentes = prev.agentes.map(a => {
+        if (a.id === agenteId) {
+          return { ...a, horas: a.horas + 1 };
         }
-      } else {
-        // Nueva asignación
-        if (agenteYaEnColumna(columna)) {
-          alert(`${nombreCompleto} ya está asignado en este horario.`);
-          return;
-        }
-        if (nuevaMatriz[fila][columna] === null || nuevaMatriz[fila][columna] === '') {
-          if (verificarHorasConsecutivas(nuevaMatriz, columna, nombreCompleto)) {
-            setConfirmationModal({
-              show: true,
-              action: () => {
-                nuevaMatriz[fila][columna] = nombreCompleto;
-                setMatriz(nuevaMatriz);
-                actualizarHorasAgente(agenteData, 1);
-              }
-            });
-          } else {
-            nuevaMatriz[fila][columna] = nombreCompleto;
-            setMatriz(nuevaMatriz);
-            actualizarHorasAgente(agenteData, 1);
-          }
-        } else {
-          alert(`La posición (${fila + 1}, ${columna + 1}) ya está ocupada.`);
-        }
-      }
-    }
+        // Si el agente fue removido de una celda
+        const estabaEnCelda = Object.values(prev.matrices).some(matriz =>
+          matriz.some((row, rowIndex) =>
+            row.some((celda, colIndex) => 
+              celda === a.id && 
+              !(rowIndex === fila && colIndex === columna && selectedSector === selectedSector)
+            )
+          )
+        );
+        return estabaEnCelda ? a : { ...a, horas: Math.max(0, a.horas - 1) };
+      });
+      
+      return {
+        ...prev,
+        matrices: nuevasMatrices,
+        agentes: nuevosAgentes
+      };
+    });
   };
 
   const manejarClickFicha = (fila, columna) => {
-    const nuevaMatriz = matriz.map(row => [...row]);
-    if (nuevaMatriz[fila][columna] !== null) {
-      const nombreCompleto = nuevaMatriz[fila][columna];
-      nuevaMatriz[fila][columna] = null;
-      setMatriz(nuevaMatriz);
-
-      const nuevosAgentes = agentes.map(agente => 
-        `${agente.nombre} ${agente.apellido}` === nombreCompleto
-          ? { ...agente, horas: Math.max(0, agente.horas - 1) }
-          : agente
-      );
-      setAgentes(nuevosAgentes);
-    }
+    const agenteId = estado.matrices[selectedSector][fila][columna];
+    if (!agenteId) return;
+    
+    setEstado(prev => {
+      const nuevasMatrices = {
+        ...prev.matrices,
+        [selectedSector]: prev.matrices[selectedSector].map((row, rowIndex) =>
+          row.map((celda, colIndex) => {
+            if (rowIndex === fila && colIndex === columna) {
+              return null;
+            }
+            return celda;
+          })
+        )
+      };
+      
+      const nuevosAgentes = prev.agentes.map(agente => {
+        if (agente.id === agenteId) {
+          return { ...agente, horas: Math.max(0, agente.horas - 1) };
+        }
+        return agente;
+      });
+      
+      return {
+        ...prev,
+        matrices: nuevasMatrices,
+        agentes: nuevosAgentes
+      };
+    });
   };
 
-  const actualizarHorasAgente = (agenteData, incremento) => {
-    const nuevosAgentes = agentes.map(agente => 
-      agente.nombre === agenteData.nombre && agente.apellido === agenteData.apellido
-        ? { ...agente, horas: agente.horas + incremento }
-        : agente
-    );
-    setAgentes(nuevosAgentes);
-  };
-
-  const verificarHorasConsecutivas = (nuevaMatriz, columna, nombreCompleto) => {
-    let horasConsecutivas = 1;
-    
-    // Verificar hacia atrás
-    for (let i = columna - 1; i >= 0; i--) {
-      if (nuevaMatriz.some(row => row[i] === nombreCompleto)) {
-        horasConsecutivas++;
-      } else {
-        break;
-      }
-    }
-    
-    // Verificar hacia adelante
-    for (let i = columna + 1; i < nuevaMatriz[0].length; i++) {
-      if (nuevaMatriz.some(row => row[i] === nombreCompleto)) {
-        horasConsecutivas++;
-      } else {
-        break;
-      }
-    }
-    
-    return horasConsecutivas >= 3;
-  };
-
-  const ordenarAgentesPorSector = () => {
-    let agentesOrdenados = [...agentes];
+  const ordenarAgentes = () => {
+    let agentesOrdenados = [...estado.agentes];
     
     if (ordenamiento === 'alfabetico') {
       agentesOrdenados.sort((a, b) => {
@@ -446,39 +327,78 @@ const HorarioEditable = () => {
     } else {
       agentesOrdenados.sort((a, b) => b.horas - a.horas);
     }
-  
-    // Agrupar los agentes por sector
-    const agentesPorSector = sectores.map(sector => ({
-      sector,
-      agentes: agentesOrdenados.filter(agente => agente.sector === sector),
-    }));
     
-    return agentesPorSector;
+    // Agrupar por equipo
+    return equipos.map(equipo => ({
+      equipo,
+      agentes: agentesOrdenados.filter(a => a.equipo === equipo)
+    }));
   };
 
-  const cambiarOrdenamiento = () => {
-    setOrdenamiento(ordenamiento === 'alfabetico' ? 'horas' : 'alfabetico');
+  const generarTextoHorario = () => {
+    if (selectedHorarioCasilla === null) return;
+    
+    let texto = '';
+    const matrizActual = estado.matrices[selectedSector];
+    
+    if (selectedHorarioCasilla === -1) {
+      texto += '-- Equipos --\n';
+      equipos.forEach(equipo => {
+        texto += `${equipo}:\n`;
+        estado.agentes
+          .filter(a => a.equipo === equipo)
+          .forEach(a => {
+            texto += ` - ${a.nombre} ${a.apellido}\n`;
+          });
+      });
+    } else {
+      texto += `Horario: ${estado.config.horarios[selectedHorarioCasilla]}\n`;
+      matrizActual.forEach((fila, filaIndex) => {
+        if (fila[selectedHorarioCasilla]) {
+          const agente = estado.agentes.find(a => a.id === fila[selectedHorarioCasilla]);
+          if (agente) {
+            const casilla = estado.config.casillas[selectedSector][filaIndex];
+            texto += `${casilla}: ${agente.nombre} ${agente.apellido}\n`;
+          }
+        }
+      });
+    }
+    
+    setHorarioTexto(texto.trim());
+  };
+
+  const handleImportar = (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    
+    importarCSV(file, (nuevoEstado, turno, sector) => {
+      setEstado(nuevoEstado);
+      setSelectedShift(turno);
+      setSelectedSector(sector);
+      setFotoAnterior(null);
+    });
   };
 
   return (
     <div className="p-4 bg-gray-100 min-h-screen">
+      {/* Modal de confirmación */}
       {confirmationModal.show && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
-          <div className="bg-white p-4 rounded">
-            <p>¿Está seguro de que desea asignar una hora extra consecutiva a este agente?</p>
-            <div className="mt-4 flex justify-end">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white p-6 rounded shadow-lg">
+            <p className="mb-4">{confirmationModal.mensaje}</p>
+            <div className="flex justify-end space-x-2">
               <button
                 onClick={() => {
                   confirmationModal.action();
-                  setConfirmationModal({ show: false, action: null });
+                  setConfirmationModal({ show: false });
                 }}
-                className="bg-blue-500 text-white p-2 rounded mr-2"
+                className="bg-blue-500 text-white px-4 py-2 rounded"
               >
                 Confirmar
               </button>
               <button
-                onClick={() => setConfirmationModal({ show: false, action: null })}
-                className="bg-red-500 text-white p-2 rounded"
+                onClick={() => setConfirmationModal({ show: false })}
+                className="bg-gray-300 px-4 py-2 rounded"
               >
                 Cancelar
               </button>
@@ -486,111 +406,143 @@ const HorarioEditable = () => {
           </div>
         </div>
       )}
-      <div className="mb-4 flex space-x-4">
-        <select
-          value={selectedShift}
-          onChange={(e) => setSelectedShift(e.target.value)}
-          className="border p-2"
+      
+      {/* Header con controles */}
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => navigate('/')}
+          className="text-2xl font-bold text-gray-800"
         >
-          <option value="mañana">Mañana</option>
-          <option value="tarde">Tarde</option>
-          <option value="noche">Noche</option>
-        </select>
-        <select
-          value={selectedSector}
-          onChange={(e) => setSelectedSector(e.target.value)}
-          className="border p-2"
-        >
-          <option value="entrada">Entrada</option>
-          <option value="salida">Salida</option>
-        </select>
+          Gestión de Horarios
+        </button>
+        
+        <div className="flex gap-2 ml-auto">
+          <select
+            value={selectedShift}
+            onChange={(e) => setSelectedShift(e.target.value)}
+            className="border p-2 rounded"
+          >
+            <option value="mañana">Mañana</option>
+            <option value="tarde">Tarde</option>
+            <option value="noche">Noche</option>
+          </select>
+          
+          <select
+            value={selectedSector}
+            onChange={(e) => setSelectedSector(e.target.value)}
+            className="border p-2 rounded"
+          >
+            <option value="entrada">Entrada</option>
+            <option value="salida">Salida</option>
+          </select>
+        </div>
       </div>
-      <div className="mb-4">
-        <h2 className="text-xl font-bold mb-2">Registrar Agentes</h2>
-        <div className="flex items-center mb-2">
+      
+      {/* Sección de agentes */}
+      <div className="mb-6 bg-white p-4 rounded shadow">
+        <h2 className="text-xl font-bold mb-4">Agentes</h2>
+        
+        <div className="flex flex-wrap gap-2 mb-4">
           <input
             type="text"
             value={nuevoNombre}
             onChange={(e) => setNuevoNombre(e.target.value)}
-            className="border p-2 mr-2"
+            className="border p-2 rounded"
             placeholder="Nombre"
           />
           <input
             type="text"
             value={nuevoApellido}
             onChange={(e) => setNuevoApellido(e.target.value)}
-            className="border p-2 mr-2"
+            className="border p-2 rounded"
             placeholder="Apellido"
           />
           <select
-            value={nuevoSector}
-            onChange={(e) => setNuevoSector(e.target.value)}
-            className="border p-2 mr-2"
+            value={nuevoEquipo}
+            onChange={(e) => setNuevoEquipo(e.target.value)}
+            className="border p-2 rounded"
           >
-            {sectores.map(sector => (
-              <option key={sector} value={sector}>{sector}</option>
+            {equipos.map(equipo => (
+              <option key={equipo} value={equipo}>{equipo}</option>
             ))}
           </select>
           <button
             onClick={agregarAgente}
-            className="bg-blue-500 text-white p-2 rounded"
+            className="bg-blue-500 text-white p-2 rounded flex items-center"
           >
-            <Plus size={20} />
+            <Plus size={20} className="mr-1" />
+            Agregar
           </button>
         </div>
-      <div className="mt-4 mb-4">
-        <button
-          onClick={exportarCSV}
-          className="bg-green-500 text-white p-2 rounded shadow transition-transform transform hover:scale-105 hover:shadow-lg"
-        >
-          Exportar a CSV
-        </button>
-        <input
-          type="file"
-          accept=".csv"
-          onChange={importarCSV}
-          className="p-2 border"
-        />
-        <Link
-          to="/estadisticas"
-          className="bg-purple-500 text-white p-2 w-44 rounded mr-2 flex items-center shadow transition-transform transform hover:scale-105 hover:shadow-lg"
-        >
-          <BarChart2 size={20} className="mr-2" />
-          Ver Estadísticas
-      </Link>
-      </div>
-        <div className="flex items-center mb-2 ">
+        
+        <div className="flex flex-wrap gap-2 mb-4">
           <button
-            onClick={cambiarOrdenamiento}
-            className="bg-gray-300 text-gray-700 p-2 rounded flex items-center shadow transition-transform transform hover:scale-105 hover:shadow-lg"
+            onClick={() => exportarCSV(estado, selectedShift, selectedSector)}
+            className="bg-green-500 text-white p-2 rounded flex items-center"
           >
-            <ArrowUpDown size={20} className="mr-2" />
-            {ordenamiento === 'alfabetico' ? 'Ordenado alfabeticamente' : 'Ordenado por carga horaria'}
+            <Download size={20} className="mr-1" />
+            Exportar
+          </button>
+          <label className="bg-purple-500 text-white p-2 rounded cursor-pointer flex items-center">
+            <Upload size={20} className="mr-1" />
+            Importar
+            <input
+              type="file"
+              accept=".csv"
+              onChange={handleImportar}
+              className="hidden"
+            />
+          </label>
+          <button
+            onClick={() => setOrdenamiento(ordenamiento === 'alfabetico' ? 'horas' : 'alfabetico')}
+            className="bg-gray-500 text-white p-2 rounded flex items-center"
+          >
+            <ArrowUpDown size={20} className="mr-1" />
+            {ordenamiento === 'alfabetico' ? 'Alfabético' : 'Por horas'}
+          </button>
+          <Link
+            to="/estadisticas"
+            className="bg-indigo-500 text-white p-2 rounded flex items-center"
+          >
+            <BarChart2 size={20} className="mr-1" />
+            Estadísticas
+          </Link>
+          <button
+            onClick={() => {
+              if (confirm('¿Está seguro de que desea borrar todos los datos?')) {
+                limpiarEstado();
+                window.location.reload();
+              }
+            }}
+            className="bg-red-500 text-white p-2 rounded ml-auto"
+          >
+            <Trash2 size={20} />
           </button>
         </div>
-        <div className="flex space-x-4">
-          {ordenarAgentesPorSector().map(({ sector, agentes }) => (
-            <div 
-              key={sector} 
-              className="flex-1 bg-white p-4 rounded shadow"
+        
+        {/* Lista de agentes por equipo */}
+        <div className="flex gap-4">
+          {ordenarAgentes().map(({ equipo, agentes }) => (
+            <div
+              key={equipo}
+              className="flex-1 bg-gray-50 p-3 rounded"
               onDragOver={manejarDragOver}
-              onDrop={(e) => manejarDrop(e, null, null, sector)}
             >
-              <h3 className="text-lg font-semibold mb-2 capitalize">{sector}</h3>
-              <div className="flex flex-col gap-2">
+              <h3 className="font-semibold mb-2">{equipo}</h3>
+              <div className="space-y-2">
                 {agentes.map(agente => (
                   <div
-                    key={agente.id} // Usar el id único aquí
-                    className={`${agente.color} p-2 rounded flex items-center text-white cursor-pointer shadow transition-transform transform hover:scale-105 hover:shadow-lg`}
+                    key={agente.id}
                     draggable
-                    onDragStart={(e) => manejarDragStart(e, agente)}
+                    onDragStart={(e) => manejarDragStart(e, agente.id)}
+                    className={`${agente.color} text-white p-2 rounded flex justify-between items-center cursor-move`}
                   >
-                    <span className="mr-2">{agente.apellido}, {agente.nombre} ({agente.horas} h)</span>
+                    <span>{agente.apellido}, {agente.nombre} ({agente.horas}h)</span>
                     <button
-                      onClick={() => eliminarAgente(agente.id)} // Pasar el id aquí también
-                      className="text-red-200 hover:text-red-100 ml-auto"
+                      onClick={() => eliminarAgente(agente.id)}
+                      className="ml-2 text-white hover:text-red-200"
                     >
-                    <Trash2 size={16} />
+                      <Trash2 size={16} />
                     </button>
                   </div>
                 ))}
@@ -598,109 +550,92 @@ const HorarioEditable = () => {
             </div>
           ))}
         </div>
-        
-      <button
-        onClick={limpiarLocalStorage} // Agrega el botón aquí
-        className="bg-red-500 text-white p-2 rounded ml-2 shadow transition-transform transform hover:scale-105 hover:shadow-lg"
-      >Borrar Todo
-        <Trash2 size={14} />
-      </button>
       </div>
-      <div className="mt-4">
-          <h3 className="text-lg font-semibold mb-2">Seleccionar Horario</h3>
+      
+      {/* Generador de texto */}
+      <div className="mb-6 bg-white p-4 rounded shadow">
+        <h3 className="font-semibold mb-2">Generar Texto</h3>
+        <div className="flex gap-2">
           <select
-            className="border p-2 mb-2"
             value={selectedHorarioCasilla || ''}
             onChange={(e) => setSelectedHorarioCasilla(Number(e.target.value))}
+            className="border p-2 rounded"
           >
-            <option value="" disabled>Selecciona un horario</option>
-            {horarios.map((horario, index) => (
+            <option value="" disabled>Seleccionar horario</option>
+            {estado.config.horarios.map((horario, index) => (
               <option key={index} value={index}>{horario}</option>
             ))}
-            <option value={-1} >Sectores</option>
+            <option value={-1}>Equipos</option>
           </select>
           <button
             onClick={generarTextoHorario}
-            className="bg-blue-500 text-white p-2 rounded ml-2 cursor-pointer shadow transition-transform transform hover:scale-105 hover:shadow-lg"
+            className="bg-blue-500 text-white p-2 rounded"
             disabled={selectedHorarioCasilla === null}
           >
-            Generar Texto
+            Generar
           </button>
         </div>
+        
         {horarioTexto && (
-          <div className="mt-4 bg-white p-4 rounded shadow">
-            <h3 className="text-lg font-semibold mb-2">Texto Generado</h3>
-            <pre className="whitespace-pre-wrap">{horarioTexto}</pre>
+          <div className="mt-4">
+            <pre className="whitespace-pre-wrap bg-gray-50 p-3 rounded">{horarioTexto}</pre>
             <button
-              onClick={eliminarTextoHorario}
-              className="bg-red-500 text-white p-2 rounded mt-2 shadow transition-transform transform hover:scale-105 hover:shadow-lg"
+              onClick={() => setHorarioTexto('')}
+              className="mt-2 bg-red-500 text-white px-3 py-1 rounded"
             >
-              Eliminar Texto
+              Limpiar
             </button>
           </div>
         )}
-      <div className="overflow-x-auto">
-        <table className="w-full bg-white shadow-md rounded">
+      </div>
+      
+      {/* Matriz de horarios */}
+      <div className="bg-white p-4 rounded shadow overflow-x-auto">
+        <table className="w-full">
           <thead>
             <tr>
               <th className="border p-2 w-32">
                 {selectedSector === 'entrada' ? 'Entradas' : 'Salidas'}
               </th>
-              {horarios.map((horario, index) => (
-                <th key={index} className="border p-2">
-                  {horario}
-                </th>
+              {estado.config.horarios.map((horario, index) => (
+                <th key={index} className="border p-2">{horario}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {matriz.map((fila, filaIndex) => (
+            {estado.matrices[selectedSector].map((fila, filaIndex) => (
               <tr key={filaIndex}>
-                <td className="border p-2 w-32">
-                  <input
-                    type="text"
-                    value={encabezadosFilas[filaIndex]}
-                    onChange={(e) => editarEncabezadoFila(filaIndex + 1, e.target.value)}
-                    className="w-full font-bold"
-                  />
+                <td className="border p-2 font-bold">
+                  {estado.config.casillas[selectedSector][filaIndex]}
                 </td>
-                {fila.map((celda, columnaIndex) => (
-                  <td
-                  key={columnaIndex}
-                  className="border p-2 w-24 h-12"
-                  onDragOver={manejarDragOver}
-                  onDrop={(e) => manejarDrop(e, filaIndex, columnaIndex)}
-                  onClick={() => manejarClickFicha(filaIndex, columnaIndex)}
-                >
-                  {celda && (
-                    <div 
-                      className={`w-full h-full flex items-center justify-center ${agentes.find(a => `${a.nombre} ${a.apellido}` === celda)?.color} text-white rounded cursor-pointer shadow transition-transform transform hover:scale-105 hover:shadow-lg`}
-                      draggable
-                      onDragStart={(e) => manejarDragStart(e, { nombre: celda.split(' ')[0], apellido: celda.split(' ')[1] }, filaIndex, columnaIndex)}
+                {fila.map((agenteId, colIndex) => {
+                  const agente = estado.agentes.find(a => a.id === agenteId);
+                  return (
+                    <td
+                      key={colIndex}
+                      className="border p-1"
+                      onDragOver={manejarDragOver}
+                      onDrop={(e) => manejarDrop(e, filaIndex, colIndex)}
+                      onClick={() => manejarClickFicha(filaIndex, colIndex)}
                     >
-                      {celda}
-                    </div>
-                  )}
-                </td>
-                ))}
+                      {agente && (
+                        <div
+                          className={`${agente.color} text-white p-1 rounded text-xs cursor-move`}
+                          draggable
+                          onDragStart={(e) => {
+                            e.stopPropagation();
+                            manejarDragStart(e, agente.id);
+                          }}
+                        >
+                          {agente.apellido}
+                        </div>
+                      )}
+                    </td>
+                  );
+                })}
               </tr>
             ))}
           </tbody>
         </table>
       </div>
     </div>
-  );
-};
-
-const App = () => {
-  return (
-    <Router>
-      <Routes>
-        <Route path="/" element={<HorarioEditable />} />
-        <Route path="/estadisticas" element={<EstadisticasCasillas />} />
-      </Routes>
-    </Router>
-  );
-};
-
-export default App;
