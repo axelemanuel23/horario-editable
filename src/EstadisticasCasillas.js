@@ -154,39 +154,65 @@ const EstadisticasCasillas = () => {
                 </div>
               ))}
             </div>
-
-            {/* Historial de cambios */}
-            {estado.historial && estado.historial.length > 0 && (
-              <div className="mt-6 bg-white p-4 rounded shadow">
-                <h2 className="text-xl font-semibold mb-4">Historial de Cambios</h2>
-                <div className="space-y-2 max-h-96 overflow-y-auto">
-                  {estado.historial
-                    .filter(h => {
-                      const agenteAnterior = estado.agentes.find(a => a.id === h.agenteAnterior);
-                      const agenteNuevo = estado.agentes.find(a => a.id === h.agenteNuevo);
-                      return agenteAnterior?.id === agenteSeleccionado || 
-                             agenteNuevo?.id === agenteSeleccionado;
-                    })
-                    .map((historial, index) => {
-                      const agenteAnterior = estado.agentes.find(a => a.id === historial.agenteAnterior);
-                      const agenteNuevo = estado.agentes.find(a => a.id === historial.agenteNuevo);
-                      const casilla = estado.config.casillas[selectedSector]?.[historial.fila] || 
-                                      `Casilla ${historial.fila + 1}`;
-                      
-                      return (
-                        <div key={index} className="flex items-center justify-between p-2 bg-gray-50 rounded">
-                          <span className="text-sm">
-                            {new Date(historial.timestamp).toLocaleTimeString()} - {historial.tipo}
-                          </span>
-                          <span className="text-sm">
-                            {agenteAnterior?.apellido || 'Vacía'} → {agenteNuevo?.apellido || 'Vacía'}
-                          </span>
-                        </div>
-                      );
-                    })}
-                </div>
+// Reemplazar la sección de historial en EstadisticasCasillas.js (líneas ~160-190)
+{/* Historial de cambios */}
+{estado.historial && estado.historial.length > 0 && (
+  <div className="mt-6 bg-white p-4 rounded shadow">
+    <h2 className="text-xl font-semibold mb-4">Historial de Cambios</h2>
+    <div className="space-y-2 max-h-96 overflow-y-auto">
+      {estado.historial
+        .filter(h => {
+          const agenteAnterior = estado.agentes.find(a => a.id === h.agenteAnterior);
+          const agenteNuevo = estado.agentes.find(a => a.id === h.agenteNuevo);
+          return agenteAnterior?.id === agenteSeleccionado || 
+                 agenteNuevo?.id === agenteSeleccionado;
+        })
+        .map((historial, index) => {
+          const agenteAnterior = estado.agentes.find(a => a.id === historial.agenteAnterior);
+          const agenteNuevo = estado.agentes.find(a => a.id === historial.agenteNuevo);
+          
+          // Determinar el sector basado en el tipo de cambio o buscar en ambas matrices
+          let casilla = `Casilla ${historial.fila + 1}`;
+          let sector = 'desconocido';
+          
+          // Buscar el sector correcto
+          if (historial.sector) {
+            sector = historial.sector;
+            casilla = estado.config.casillas[historial.sector]?.[historial.fila] || casilla;
+          } else {
+            // Intentar determinar el sector basado en el agente
+            ['entrada', 'salida'].forEach(sectorName => {
+              if (estado.matrices[sectorName]?.[historial.fila]) {
+                const tieneAgente = estado.matrices[sectorName][historial.fila].some(
+                  id => id === historial.agenteAnterior || id === historial.agenteNuevo
+                );
+                if (tieneAgente) {
+                  sector = sectorName;
+                  casilla = estado.config.casillas[sectorName][historial.fila];
+                }
+              }
+            });
+          }
+          
+          return (
+            <div key={index} className="flex items-center justify-between p-2 bg-gray-50 rounded">
+              <div>
+                <span className="text-sm font-medium">
+                  {new Date(historial.timestamp).toLocaleTimeString()} - {historial.tipo}
+                </span>
+                <span className="text-sm ml-2 text-gray-600">
+                  {sector} - {casilla}
+                </span>
               </div>
-            )}
+              <span className="text-sm">
+                {agenteAnterior?.apellido || 'Vacía'} → {agenteNuevo?.apellido || 'Vacía'}
+              </span>
+            </div>
+          );
+        })}
+    </div>
+  </div>
+)}
           </>
         )}
       </div>
