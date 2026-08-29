@@ -148,6 +148,11 @@ export const importarCSV = (file, callback) => {
             estado.historial = fila.slice(1).map(h => JSON.parse(h));
           }
           break;
+
+          // En el switch de importarCSV, agregar al final
+default:
+  console.warn(`Tipo de fila no reconocido: ${fila[0]}`);
+  break;
       }
     });
     
