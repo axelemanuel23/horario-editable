@@ -509,7 +509,7 @@ const HorarioEditable = () => {
           </Link>
           <button
             onClick={() => {
-              if (confirm('¿Está seguro de que desea borrar todos los datos?')) {
+              if (window.confirm('¿Está seguro de que desea borrar todos los datos?')) {
                 limpiarEstado();
                 window.location.reload();
               }
