@@ -639,3 +639,18 @@ const HorarioEditable = () => {
         </table>
       </div>
     </div>
+);
+};
+
+const App = () => {
+  return (
+    <Router>
+      <Routes>
+        <Route path="/" element={<HorarioEditable />} />
+        <Route path="/estadisticas" element={<EstadisticasCasillas />} />
+      </Routes>
+    </Router>
+  );
+};
+
+export default App;
