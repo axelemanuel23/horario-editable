@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { ArrowLeft, TrendingUp, Clock, MapPin } from 'lucide-react';
 import { cargarEstadoInicial } from './utils/storage';
@@ -7,7 +6,6 @@ import { cargarEstadoInicial } from './utils/storage';
 const EstadisticasCasillas = () => {
   const [estado, setEstado] = useState(null);
   const [agenteSeleccionado, setAgenteSeleccionado] = useState('');
-  const [vistaActual, setVistaActual] = useState('casillas');
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -154,7 +152,6 @@ const EstadisticasCasillas = () => {
                 </div>
               ))}
             </div>
-// Reemplazar la sección de historial en EstadisticasCasillas.js (líneas ~160-190)
 {/* Historial de cambios */}
 {estado.historial && estado.historial.length > 0 && (
   <div className="mt-6 bg-white p-4 rounded shadow">
