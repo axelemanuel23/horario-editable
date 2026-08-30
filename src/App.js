@@ -1,115 +1,96 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { BrowserRouter as Router, Route, Routes, Link } from 'react-router-dom';
-import { Plus, Trash2, ArrowUpDown, BarChart2, Info } from 'lucide-react';
+import { Plus, Trash2, ArrowUpDown, BarChart2, Info, Settings } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import Papa from 'papaparse';
 import EstadisticasCasillas from './EstadisticasCasillas';
+import PasoManager from './PasoManager';
 
 const colors = [
   'bg-red-500', 'bg-blue-500', 'bg-green-500', 'bg-yellow-500', 'bg-purple-500',
   'bg-pink-500', 'bg-indigo-500', 'bg-teal-500', 'bg-orange-500', 'bg-cyan-500'
 ];
 
-// =========================================================
-// CATÁLOGO FIJO DE CASILLAS (compartido en concepto con el
-// motor automático de balanceo: Entrada 1-16, Salida 1-11).
-// Ya no son encabezados editables a mano: el número identifica
-// la casilla de forma inequívoca.
-// =========================================================
+const HORAS_DIA = 24;
 
-const BOOTH_CATALOG = { entrada: 16, salida: 11 };
-const SECTOR_LABEL = { entrada: 'Entradas', salida: 'Salidas' };
-
-function boothLabel(sector, numero) {
-  return `${sector === 'entrada' ? 'Entrada' : 'Salida'} ${numero}`;
+function crearMatrizVacia(filas) {
+  return Array(filas).fill().map(() => Array(HORAS_DIA).fill(null));
 }
 
-function crearMatrizVacia(filas, columnas) {
-  return Array(filas).fill().map(() => Array(columnas).fill(null));
+function matrizKey(pasoId, vistaId) {
+  return `${pasoId}:${vistaId}`;
 }
 
-// Los únicos equipos "base" que se asignan a mano. "Casilla" ya no es
-// un equipo manual: se calcula solo, mirando quién tiene una celda
-// asignada en la hora vigente.
-const EQUIPOS = ['Micro', 'Corredor'];
-
-const SHIFT_HORARIOS = {
-  mañana: ['06:00', '07:00', '08:00', '09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00'],
-  tarde: ['15:00', '16:00', '17:00', '18:00', '19:00', '20:00', '21:00', '22:00', '23:00', '00:00'],
-  noche: ['20:00', '21:00', '22:00', '23:00', '00:00', '01:00', '02:00', '03:00', '04:00', '05:00'],
-};
-
-// =========================================================
-// UTILIDADES DE TIEMPO
-//
-// Convierte cada etiqueta de hora del turno en "minutos desde el
-// inicio del turno", resolviendo el cruce de medianoche (necesario
-// para el turno noche). Con eso se puede ubicar en qué columna cae
-// el momento actual del reloj.
-// =========================================================
-
-function horaAMinutos(hora) {
-  const [h, m] = hora.split(':').map(Number);
-  return h * 60 + m;
-}
-
-function minutosDesdeInicioTurno(horarios) {
-  const inicio = horaAMinutos(horarios[0]);
-  return horarios.map((hora) => {
-    const minutos = horaAMinutos(hora);
-    return minutos >= inicio ? minutos - inicio : minutos + 24 * 60 - inicio;
-  });
-}
-
-// Devuelve el índice de columna que corresponde a la hora actual del
-// reloj para el turno dado, o null si el turno seleccionado no
-// corresponde a la hora real (ej. tenés seleccionado "mañana" pero es
-// de noche). Cada columna cubre una hora completa desde su etiqueta.
-function obtenerColumnaActual(horarios) {
-  const ahora = new Date();
-  const inicio = horaAMinutos(horarios[0]);
-  let minutosAhora = ahora.getHours() * 60 + ahora.getMinutes() - inicio;
-  if (minutosAhora < 0) minutosAhora += 24 * 60;
-
-  const columnasEnMinutos = minutosDesdeInicioTurno(horarios);
-
-  for (let i = 0; i < columnasEnMinutos.length; i++) {
-    const inicioColumna = columnasEnMinutos[i];
-    const finColumna = inicioColumna + 60;
-    if (minutosAhora >= inicioColumna && minutosAhora < finColumna) {
-      return i;
-    }
+// Arma la secuencia de horas (0-23) que corresponde a un turno,
+// caminando desde horaInicio hasta horaFin (exclusive), con wraparound
+// de medianoche. Cada posición de este array es la "columna de
+// pantalla" i; el valor es la "columna absoluta" real en la matriz.
+function construirHorasTurno(horaInicio, horaFin) {
+  const horas = [];
+  let h = horaInicio;
+  for (let i = 0; i < HORAS_DIA; i++) {
+    horas.push(h);
+    h = (h + 1) % HORAS_DIA;
+    if (h === horaFin) break;
   }
-  return null;
+  return horas;
+}
+
+function etiquetaHora(h) {
+  return `${String(h).padStart(2, '0')}:00`;
 }
 
 const HorarioEditable = () => {
-  const [selectedShift, setSelectedShift] = useState('mañana');
-  const [selectedSector, setSelectedSector] = useState('entrada');
-  const [horarios, setHorarios] = useState(SHIFT_HORARIOS['mañana']);
-
-  const [agentes, setAgentes] = useState(() => {
-    const saved = localStorage.getItem('agentes_v2');
+  const [pasos] = useState(() => {
+    const saved = localStorage.getItem('pasos_v1');
     return saved ? JSON.parse(saved) : [];
   });
 
-  const [matrizEntrada, setMatrizEntrada] = useState(() => {
-    const saved = localStorage.getItem('matrizEntrada_v2');
-    return saved ? JSON.parse(saved) : crearMatrizVacia(BOOTH_CATALOG.entrada, 10);
+  const [selectedPasoId, setSelectedPasoId] = useState(() => {
+    const saved = localStorage.getItem('selectedPasoId_v1');
+    return saved || null;
   });
 
-  const [matrizSalida, setMatrizSalida] = useState(() => {
-    const saved = localStorage.getItem('matrizSalida_v2');
-    return saved ? JSON.parse(saved) : crearMatrizVacia(BOOTH_CATALOG.salida, 10);
+  const pasoActual = pasos.find((p) => p.id === selectedPasoId) || pasos[0] || null;
+
+  useEffect(() => {
+    if (pasoActual) localStorage.setItem('selectedPasoId_v1', pasoActual.id);
+  }, [pasoActual]);
+
+  const [selectedVistaId, setSelectedVistaId] = useState(null);
+  const [selectedTurnoId, setSelectedTurnoId] = useState(null);
+
+  // Cuando cambia el paso activo, reancla vista y turno seleccionados a
+  // algo válido dentro de ese paso.
+  useEffect(() => {
+    if (!pasoActual) return;
+    setSelectedVistaId((actual) =>
+      pasoActual.vistas.some((v) => v.id === actual) ? actual : pasoActual.vistas[0]?.id ?? null
+    );
+    setSelectedTurnoId((actual) =>
+      pasoActual.turnos.some((t) => t.id === actual) ? actual : pasoActual.turnos[0]?.id ?? null
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pasoActual?.id]);
+
+  const vistaActual = pasoActual?.vistas.find((v) => v.id === selectedVistaId) || null;
+  const turnoActual = pasoActual?.turnos.find((t) => t.id === selectedTurnoId) || null;
+
+  const [agentes, setAgentes] = useState(() => {
+    const saved = localStorage.getItem('agentes_v3');
+    return saved ? JSON.parse(saved) : [];
   });
 
-  const [lastProcessedColumnIndex, setLastProcessedColumnIndex] = useState(() => {
-    const saved = localStorage.getItem('lastProcessedColumnIndex_v2');
-    return saved !== null ? Number(saved) : 0;
+  const [matrices, setMatrices] = useState(() => {
+    const saved = localStorage.getItem('matrices_v3');
+    return saved ? JSON.parse(saved) : {};
   });
-  // Contador que solo sirve para forzar un refresco de pantalla cada
-  // 30s (la hora del reloj cambia aunque el estado de React no se
-  // entere solo). No participa de ninguna lógica de negocio.
+
+  const [lastProcessedHour, setLastProcessedHour] = useState(() => {
+    const saved = localStorage.getItem('lastProcessedHour_v3');
+    return saved !== null ? Number(saved) : null;
+  });
+
   const [tick, setTick] = useState(0);
 
   const [confirmationModal, setConfirmationModal] = useState({ show: false, action: null });
@@ -117,107 +98,111 @@ const HorarioEditable = () => {
   const [horarioTexto, setHorarioTexto] = useState('');
   const [nuevoNombre, setNuevoNombre] = useState('');
   const [nuevoApellido, setNuevoApellido] = useState('');
-  const [nuevoSector, setNuevoSector] = useState('Micro');
-  const [nuevoSectorPrincipal, setNuevoSectorPrincipal] = useState(selectedSector);
-  const [nuevoHorarioPrincipal, setNuevoHorarioPrincipal] = useState(selectedShift);
-  // Celda cuyo cuadro informativo (sector principal ajeno) está
-  // abierto ahora mismo. Solo uno a la vez, como pediste.
-  const [infoCelda, setInfoCelda] = useState(null);
+  const [nuevoEquipo, setNuevoEquipo] = useState('');
+  const [nuevoVistaPrincipal, setNuevoVistaPrincipal] = useState(null);
+  const [nuevoTurnoPrincipal, setNuevoTurnoPrincipal] = useState(null);
   const [ordenamiento, setOrdenamiento] = useState('alfabetico');
+  const [infoCelda, setInfoCelda] = useState(null);
 
   const [importedData, setImportedData] = useState(null);
 
-  // Refs con el estado más reciente, para que el chequeo horario (que
-  // corre en un setInterval) siempre lea datos actuales sin quedar
-  // atado a un closure viejo.
   const agentesRef = useRef(agentes);
-  const matrizEntradaRef = useRef(matrizEntrada);
-  const matrizSalidaRef = useRef(matrizSalida);
+  const matricesRef = useRef(matrices);
   agentesRef.current = agentes;
-  matrizEntradaRef.current = matrizEntrada;
-  matrizSalidaRef.current = matrizSalida;
+  matricesRef.current = matrices;
+
+  // Reancla los defaults de registro cuando cambia el paso/vista/turno
+  // activos, para que el formulario arranque en algo válido.
+  useEffect(() => {
+    if (pasoActual) setNuevoEquipo(pasoActual.equipos[0] || '');
+  }, [pasoActual]);
+  useEffect(() => {
+    setNuevoVistaPrincipal(selectedVistaId);
+  }, [selectedVistaId]);
+  useEffect(() => {
+    setNuevoTurnoPrincipal(selectedTurnoId);
+  }, [selectedTurnoId]);
 
   useEffect(() => {
     if (importedData) {
       setAgentes(importedData.nuevosAgentes);
-      setMatrizEntrada(importedData.nuevaMatrizEntrada);
-      setMatrizSalida(importedData.nuevaMatrizSalida);
-      setSelectedSector(importedData.selectedSector);
-      setSelectedShift(importedData.selectedShift);
+      setMatrices(importedData.nuevasMatrices);
       setImportedData(null);
     }
   }, [importedData]);
 
   useEffect(() => {
-    setHorarios(SHIFT_HORARIOS[selectedShift]);
-  }, [selectedShift]);
-
-  useEffect(() => {
-    localStorage.setItem('agentes_v2', JSON.stringify(agentes));
+    localStorage.setItem('agentes_v3', JSON.stringify(agentes));
   }, [agentes]);
 
   useEffect(() => {
-    localStorage.setItem('matrizEntrada_v2', JSON.stringify(matrizEntrada));
-  }, [matrizEntrada]);
+    localStorage.setItem('matrices_v3', JSON.stringify(matrices));
+  }, [matrices]);
 
   useEffect(() => {
-    localStorage.setItem('matrizSalida_v2', JSON.stringify(matrizSalida));
-  }, [matrizSalida]);
+    if (lastProcessedHour !== null) {
+      localStorage.setItem('lastProcessedHour_v3', String(lastProcessedHour));
+    }
+  }, [lastProcessedHour]);
 
-  useEffect(() => {
-    localStorage.setItem('lastProcessedColumnIndex_v2', String(lastProcessedColumnIndex));
-  }, [lastProcessedColumnIndex]);
+  const limpiarLocalStorage = () => {
+    localStorage.removeItem('agentes_v3');
+    localStorage.removeItem('matrices_v3');
+    localStorage.removeItem('lastProcessedHour_v3');
+    setAgentes([]);
+    setMatrices({});
+    setLastProcessedHour(null);
+  };
 
   // =========================================================
   // INTERCAMBIO DE EQUIPO AL HABER RELEVO EN CASILLA
   //
-  // Una vez por hora (chequeado cada 30s por si la pestaña estuvo
-  // cerrada y hay que ponerse al día con varias horas de una vez):
-  // compara la columna anterior contra la nueva, casilla por casilla,
-  // en ambos sectores. Si alguien nuevo ocupó la casilla de otro que
-  // se retira, el que se retira hereda el equipo (Micro/Corredor) que
-  // tenía el que llega, en ese mismo momento. Si la casilla quedó
-  // vacía sin relevo, no se toca nada: el que se retira ya vuelve a
-  // aparecer en su equipo de siempre, porque nunca se le modificó.
+  // Usa la hora ABSOLUTA real del reloj (0-23), no la posición dentro
+  // del turno que esté seleccionado en pantalla — así la lógica corre
+  // igual sin importar qué pestaña tengas abierta en ese momento.
   // =========================================================
 
   function procesarTransicionHoraria(columnaAnterior, columnaNueva) {
+    if (!pasoActual) return;
     const agentesActuales = agentesRef.current;
-    const mapaSectores = new Map(agentesActuales.map((a) => [a.id, a.sector]));
+    const mapaEquipos = new Map(agentesActuales.map((a) => [a.id, a.equipo]));
 
-    const aplicarTransicion = (matriz) => {
+    pasoActual.vistas.forEach((vista) => {
+      const matriz = matricesRef.current[matrizKey(pasoActual.id, vista.id)];
+      if (!matriz) return;
       for (const fila of matriz) {
         const anterior = fila[columnaAnterior];
         const nueva = fila[columnaNueva];
         if (anterior && nueva && anterior !== nueva) {
-          // El que se retira hereda el equipo del que llega (leído
-          // antes de aplicar ningún cambio en este mismo tick).
-          mapaSectores.set(anterior, mapaSectores.get(nueva));
+          mapaEquipos.set(anterior, mapaEquipos.get(nueva));
         }
       }
-    };
-
-    aplicarTransicion(matrizEntradaRef.current);
-    aplicarTransicion(matrizSalidaRef.current);
+    });
 
     setAgentes(
-      agentesActuales.map((a) => ({ ...a, sector: mapaSectores.get(a.id) ?? a.sector }))
+      agentesActuales.map((a) => ({ ...a, equipo: mapaEquipos.get(a.id) ?? a.equipo }))
     );
   }
 
   useEffect(() => {
+    if (!pasoActual) return;
     const revisarHora = () => {
       setTick((t) => t + 1);
-      const columnaActual = obtenerColumnaActual(horarios);
-      if (columnaActual === null) return;
+      const horaActual = new Date().getHours();
 
-      setLastProcessedColumnIndex((prevIdx) => {
-        let idx = prevIdx;
-        while (idx < columnaActual) {
-          procesarTransicionHoraria(idx, idx + 1);
-          idx++;
+      setLastProcessedHour((prevHora) => {
+        if (prevHora === null) return horaActual; // primer chequeo: solo ancla, no procesa
+        if (prevHora === horaActual) return prevHora;
+
+        let h = prevHora;
+        let pasos = 0;
+        while (h !== horaActual && pasos < HORAS_DIA) {
+          const siguiente = (h + 1) % HORAS_DIA;
+          procesarTransicionHoraria(h, siguiente);
+          h = siguiente;
+          pasos++;
         }
-        return columnaActual;
+        return horaActual;
       });
     };
 
@@ -225,112 +210,121 @@ const HorarioEditable = () => {
     const interval = setInterval(revisarHora, 30000);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [horarios]);
-
-  const limpiarLocalStorage = () => {
-    localStorage.removeItem('agentes_v2');
-    localStorage.removeItem('matrizEntrada_v2');
-    localStorage.removeItem('matrizSalida_v2');
-    localStorage.removeItem('lastProcessedColumnIndex_v2');
-
-    setAgentes([]);
-    setMatrizEntrada(crearMatrizVacia(BOOTH_CATALOG.entrada, 10));
-    setMatrizSalida(crearMatrizVacia(BOOTH_CATALOG.salida, 10));
-    setLastProcessedColumnIndex(0);
-  };
+  }, [pasoActual?.id]);
 
   // =========================================================
-  // HELPERS DE AGENTE POR ID
+  // HELPERS
   // =========================================================
 
   const agentePorId = (id) => agentes.find((a) => a.id === id);
   const nombreCompleto = (agente) => `${agente.nombre} ${agente.apellido}`;
 
-  const CAPITALIZADO = { mañana: 'Mañana', tarde: 'Tarde', noche: 'Noche' };
+  const matrizActual = useMemo(() => {
+    if (!pasoActual || !vistaActual) return [];
+    return matrices[matrizKey(pasoActual.id, vistaActual.id)] || crearMatrizVacia(vistaActual.casillas.length);
+  }, [matrices, pasoActual, vistaActual]);
 
-  // Un agente es "ajeno" a la pestaña actual si su sector principal y/o
-  // su turno principal no coinciden con lo que estás mirando ahora
-  // (ej. viendo Tarde, pero es un agente de turno Mañana haciendo la
-  // casilla de las 15:00, que es frontera entre ambos turnos).
-  const infoAjeno = (agente) => {
-    const ajenoSector = (agente.sectorPrincipal || 'entrada') !== selectedSector;
-    const ajenoTurno = (agente.horarioPrincipal || 'mañana') !== selectedShift;
-    if (!ajenoSector && !ajenoTurno) return null;
-
-    const partes = [];
-    if (ajenoSector) partes.push(agente.sectorPrincipal === 'entrada' ? 'Entrada' : 'Salida');
-    if (ajenoTurno) partes.push(`turno ${CAPITALIZADO[agente.horarioPrincipal] || agente.horarioPrincipal}`);
-    return `Agente de ${partes.join(' — ')}`;
+  const setMatrizActual = (nuevaMatriz) => {
+    setMatrices({ ...matrices, [matrizKey(pasoActual.id, vistaActual.id)]: nuevaMatriz });
   };
 
-  const matrizActual = selectedSector === 'entrada' ? matrizEntrada : matrizSalida;
-  const setMatrizActual = selectedSector === 'entrada' ? setMatrizEntrada : setMatrizSalida;
-
-  const encabezadosFilas = useMemo(
-    () =>
-      Array.from({ length: BOOTH_CATALOG[selectedSector] }, (_, i) =>
-        boothLabel(selectedSector, i + 1)
-      ),
-    [selectedSector]
+  const horasTurno = useMemo(
+    () => (turnoActual ? construirHorasTurno(turnoActual.horaInicio, turnoActual.horaFin) : []),
+    [turnoActual]
   );
 
+  // Índice de PANTALLA (posición dentro de horasTurno) que corresponde
+  // a la hora real ahora mismo, o null si el turno seleccionado no
+  // incluye la hora actual. Solo se usa para resaltar visualmente.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const columnaEnVivo = useMemo(() => obtenerColumnaActual(horarios), [horarios, tick]);
+  const columnaEnVivoPantalla = useMemo(() => {
+    const horaActual = new Date().getHours();
+    const idx = horasTurno.indexOf(horaActual);
+    return idx === -1 ? null : idx;
+  }, [horasTurno, tick]);
 
-  // IDs de agentes ocupando cualquier casilla (de cualquier sector) en
-  // la columna vigente ahora mismo.
+  const horaAbsolutaActual = new Date().getHours();
+
+  const nombreCasilla = (vista, fila) => vista.casillas[fila]?.nombre ?? `Casilla ${fila + 1}`;
+
+  const CAPITALIZAR = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+
+  // Un agente es "ajeno" a lo que estás mirando si su vista principal
+  // y/o turno principal no coinciden con la vista/turno seleccionados.
+  // Si el paso tiene una sola vista, esa comparación nunca aplica (no
+  // hay nada contra qué diferir) — se cae sola, sin bandera especial.
+  const infoAjeno = (agente) => {
+    if (!pasoActual) return null;
+    const vistaAgente = pasoActual.vistas.find((v) => v.id === agente.vistaPrincipal);
+    const turnoAgente = pasoActual.turnos.find((t) => t.id === agente.turnoPrincipal);
+
+    const ajenoVista = pasoActual.vistas.length > 1 && agente.vistaPrincipal !== selectedVistaId;
+    const ajenoTurno = agente.turnoPrincipal !== selectedTurnoId;
+    if (!ajenoVista && !ajenoTurno) return null;
+
+    const partes = [];
+    if (ajenoVista && vistaAgente) partes.push(vistaAgente.nombre);
+    if (ajenoTurno && turnoAgente) partes.push(`turno ${CAPITALIZAR(turnoAgente.nombre)}`);
+    return partes.length ? `Agente de ${partes.join(' — ')}` : null;
+  };
+
+  // IDs de agentes ocupando cualquier casilla, de cualquier vista del
+  // paso activo, en la hora real de ahora.
   const idsEnCasillaAhora = useMemo(() => {
-    if (columnaEnVivo === null) return new Set();
+    if (!pasoActual) return new Set();
     const ids = new Set();
-    matrizEntrada.forEach((fila) => {
-      if (fila[columnaEnVivo]) ids.add(fila[columnaEnVivo]);
-    });
-    matrizSalida.forEach((fila) => {
-      if (fila[columnaEnVivo]) ids.add(fila[columnaEnVivo]);
+    pasoActual.vistas.forEach((vista) => {
+      const matriz = matrices[matrizKey(pasoActual.id, vista.id)];
+      if (!matriz) return;
+      matriz.forEach((fila) => {
+        if (fila[horaAbsolutaActual]) ids.add(fila[horaAbsolutaActual]);
+      });
     });
     return ids;
-  }, [matrizEntrada, matrizSalida, columnaEnVivo]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matrices, pasoActual, tick]);
 
-  // Horas totales ya asignadas a cada agente, contando celdas ocupadas
-  // en TODA la grilla (ambos sectores). Se calcula, no se guarda: así
-  // nunca queda desincronizado de lo que realmente hay en la matriz.
+  // Horas totales asignadas a cada agente, contando TODAS las vistas
+  // del paso activo (24 columnas cada una).
   const horasPorAgente = useMemo(() => {
+    if (!pasoActual) return new Map();
     const conteo = new Map();
-    const contar = (matriz) => {
+    pasoActual.vistas.forEach((vista) => {
+      const matriz = matrices[matrizKey(pasoActual.id, vista.id)];
+      if (!matriz) return;
       matriz.forEach((fila) => {
         fila.forEach((id) => {
           if (id) conteo.set(id, (conteo.get(id) || 0) + 1);
         });
       });
-    };
-    contar(matrizEntrada);
-    contar(matrizSalida);
+    });
     return conteo;
-  }, [matrizEntrada, matrizSalida]);
+  }, [matrices, pasoActual]);
 
   // =========================================================
   // EXPORTAR / IMPORTAR CSV
-  //
-  // Se sigue exportando el NOMBRE resuelto (no el ID crudo) para que
-  // el archivo siga siendo compatible con EstadisticasCasillas, que
-  // lee nombres. Al importar, se resuelve el nombre contra la lista
-  // de agentes del mismo archivo para recuperar el ID interno.
   // =========================================================
 
   const exportarCSV = () => {
-    const matrizConNombres = matrizActual.map((fila) =>
-      fila.map((id) => (id ? nombreCompleto(agentePorId(id)) : ''))
+    if (!pasoActual || !vistaActual || !turnoActual) return;
+
+    const filasMatrizVentana = matrizActual.map((fila) =>
+      horasTurno.map((h) => (fila[h] ? nombreCompleto(agentePorId(fila[h])) : ''))
     );
+    const filasMatrizNombres = filasMatrizVentana.map((fila) => fila.map((n) => n || ''));
 
     const datosCSV = [
-      ['tipo', 'id', 'nombre', 'apellido', 'horas', 'sector', 'color', 'sectorPrincipal', 'horarioPrincipal'],
-      ...agentes.map((a) => [
-        'agente', a.id, a.nombre, a.apellido, horasPorAgente.get(a.id) || 0, a.sector, a.color,
-        a.sectorPrincipal || 'entrada', a.horarioPrincipal || 'mañana',
-      ]),
-      ['encabezado', selectedSector, ...encabezadosFilas],
-      ['horario', ...horarios],
-      ...matrizConNombres.map((fila, index) => ['matriz', index, ...fila]),
+      ['tipo', 'id', 'nombre', 'apellido', 'horas', 'equipo', 'color', 'vistaPrincipal', 'turnoPrincipal'],
+      ...agentes
+        .filter((a) => a.paso === pasoActual.id)
+        .map((a) => [
+          'agente', a.id, a.nombre, a.apellido, horasPorAgente.get(a.id) || 0, a.equipo, a.color,
+          a.vistaPrincipal, a.turnoPrincipal,
+        ]),
+      ['paso', pasoActual.id, pasoActual.nombre],
+      ['encabezado', vistaActual.nombre || '', ...vistaActual.casillas.map((c) => c.nombre)],
+      ['horario', ...horasTurno.map(etiquetaHora)],
+      ...filasMatrizNombres.map((fila, index) => ['matriz', index, ...fila]),
     ];
 
     const csvContent = Papa.unparse(datosCSV);
@@ -341,7 +335,7 @@ const HorarioEditable = () => {
     const fecha = new Date();
     fecha.setHours(fecha.getHours() - 3);
     const fechaActual = fecha.toISOString().slice(0, 19).replace(/:/g, '-');
-    link.setAttribute('download', `${selectedSector}_${selectedShift}_${fechaActual}.csv`);
+    link.setAttribute('download', `${pasoActual.nombre}_${vistaActual.nombre || 'unica'}_${turnoActual.nombre}_${fechaActual}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -349,40 +343,33 @@ const HorarioEditable = () => {
 
   const importarCSV = (event) => {
     const file = event.target.files[0];
-    if (!file) return;
+    if (!file || !pasoActual || !vistaActual) return;
 
     const reader = new FileReader();
     reader.onload = (e) => {
       const parsedData = Papa.parse(e.target.result, { header: false }).data;
 
-      const nuevosAgentes = [];
-      let nuevosHorarios = [];
+      const nuevosAgentesImportados = [];
+      let horariosImportados = [];
       const filasMatrizPorNombre = [];
-      let sectorImportado = '';
-      let turnoImportado = '';
 
       parsedData.forEach((fila) => {
         switch (fila[0]) {
           case 'agente':
-            nuevosAgentes.push({
+            nuevosAgentesImportados.push({
               id: fila[1],
               nombre: fila[2],
               apellido: fila[3],
               horas: parseInt(fila[4], 10),
-              sector: fila[5],
+              equipo: fila[5],
               color: fila[6],
-              sectorPrincipal: fila[7] || 'entrada',
-              horarioPrincipal: fila[8] || 'mañana',
+              vistaPrincipal: fila[7],
+              turnoPrincipal: fila[8],
+              paso: pasoActual.id,
             });
             break;
-          case 'encabezado':
-            sectorImportado = fila[1];
-            break;
           case 'horario':
-            nuevosHorarios = fila.slice(1);
-            if (nuevosHorarios[0] === '06:00') turnoImportado = 'mañana';
-            else if (nuevosHorarios[0] === '15:00') turnoImportado = 'tarde';
-            else if (nuevosHorarios[0] === '21:00') turnoImportado = 'noche';
+            horariosImportados = fila.slice(1);
             break;
           case 'matriz':
             filasMatrizPorNombre.push(fila.slice(2));
@@ -393,24 +380,27 @@ const HorarioEditable = () => {
       });
 
       const idPorNombre = new Map(
-        nuevosAgentes.map((a) => [`${a.nombre} ${a.apellido}`, a.id])
+        nuevosAgentesImportados.map((a) => [`${a.nombre} ${a.apellido}`, a.id])
       );
 
-      const filasComoIds = filasMatrizPorNombre.map((fila) =>
-        fila.map((nombre) => (nombre ? idPorNombre.get(nombre) ?? null : null))
-      );
+      const horasAbsolutasImportadas = horariosImportados.map((h) => parseInt(h.split(':')[0], 10));
 
-      const matrizVacia = crearMatrizVacia(BOOTH_CATALOG[sectorImportado] || filasComoIds.length, 10);
-      filasComoIds.forEach((fila, i) => {
-        if (matrizVacia[i]) matrizVacia[i] = fila;
+      const matrizNueva = crearMatrizVacia(vistaActual.casillas.length);
+      filasMatrizPorNombre.forEach((fila, filaIdx) => {
+        if (filaIdx >= matrizNueva.length) return;
+        fila.forEach((nombre, i) => {
+          const horaAbs = horasAbsolutasImportadas[i];
+          if (nombre && horaAbs !== undefined) {
+            matrizNueva[filaIdx][horaAbs] = idPorNombre.get(nombre) ?? null;
+          }
+        });
       });
 
+      const agentesRestantes = agentes.filter((a) => a.paso !== pasoActual.id);
+
       setImportedData({
-        nuevosAgentes,
-        nuevaMatrizEntrada: sectorImportado === 'entrada' ? matrizVacia : matrizEntrada,
-        nuevaMatrizSalida: sectorImportado === 'salida' ? matrizVacia : matrizSalida,
-        selectedSector: sectorImportado,
-        selectedShift: turnoImportado,
+        nuevosAgentes: [...agentesRestantes, ...nuevosAgentesImportados],
+        nuevasMatrices: { ...matrices, [matrizKey(pasoActual.id, vistaActual.id)]: matrizNueva },
       });
     };
 
@@ -418,30 +408,31 @@ const HorarioEditable = () => {
   };
 
   const generarTextoHorario = () => {
-    if (selectedHorarioCasilla === null) return;
+    if (selectedHorarioCasilla === null || !pasoActual) return;
     let texto = '';
     if (selectedHorarioCasilla === -1) {
       texto += `-- Equipos --\n`;
-      EQUIPOS.forEach((equipo) => {
+      pasoActual.equipos.forEach((equipo) => {
         texto += `${equipo}:\n`;
-        agentes
-          .filter((a) => a.sector === equipo && !idsEnCasillaAhora.has(a.id))
+        agentesDelPaso
+          .filter((a) => a.equipo === equipo && !idsEnCasillaAhora.has(a.id))
           .forEach((a) => {
             texto += ` - ${a.nombre} ${a.apellido}\n`;
           });
       });
       texto += `Casilla:\n`;
-      agentes
+      agentesDelPaso
         .filter((a) => idsEnCasillaAhora.has(a.id))
         .forEach((a) => {
           texto += ` - ${a.nombre} ${a.apellido}\n`;
         });
     } else {
-      texto += `Horario: ${horarios[selectedHorarioCasilla]}\n`;
+      const horaAbs = horasTurno[selectedHorarioCasilla];
+      texto += `Horario: ${etiquetaHora(horaAbs)}\n`;
       matrizActual.forEach((fila, indexFila) => {
-        if (fila[selectedHorarioCasilla]) {
-          const agente = agentePorId(fila[selectedHorarioCasilla]);
-          texto += `${encabezadosFilas[indexFila]}: ${agente ? nombreCompleto(agente) : '?'}\n`;
+        if (fila[horaAbs]) {
+          const agente = agentePorId(fila[horaAbs]);
+          texto += `${nombreCasilla(vistaActual, indexFila)}: ${agente ? nombreCompleto(agente) : '?'}\n`;
         }
       });
     }
@@ -450,29 +441,33 @@ const HorarioEditable = () => {
 
   const eliminarTextoHorario = () => setHorarioTexto('');
 
+  const agentesDelPaso = pasoActual ? agentes.filter((a) => a.paso === pasoActual.id) : [];
+
   const agregarAgente = () => {
-    if (nuevoNombre.trim() !== '' && nuevoApellido.trim() !== '') {
-      const color = colors[agentes.length % colors.length];
-      const nuevoAgente = {
-        id: uuidv4(),
-        nombre: nuevoNombre,
-        apellido: nuevoApellido,
-        horas: 0,
-        color,
-        sector: nuevoSector,
-        sectorPrincipal: nuevoSectorPrincipal,
-        horarioPrincipal: nuevoHorarioPrincipal,
-      };
-      setAgentes([...agentes, nuevoAgente]);
-      setNuevoNombre('');
-      setNuevoApellido('');
-    }
+    if (!pasoActual || nuevoNombre.trim() === '' || nuevoApellido.trim() === '') return;
+    const color = colors[agentesDelPaso.length % colors.length];
+    const nuevoAgente = {
+      id: uuidv4(),
+      nombre: nuevoNombre,
+      apellido: nuevoApellido,
+      color,
+      paso: pasoActual.id,
+      equipo: nuevoEquipo,
+      vistaPrincipal: nuevoVistaPrincipal,
+      turnoPrincipal: nuevoTurnoPrincipal,
+    };
+    setAgentes([...agentes, nuevoAgente]);
+    setNuevoNombre('');
+    setNuevoApellido('');
   };
 
   const eliminarAgente = (id) => {
     setAgentes(agentes.filter((a) => a.id !== id));
-    setMatrizEntrada(matrizEntrada.map((fila) => fila.map((c) => (c === id ? null : c))));
-    setMatrizSalida(matrizSalida.map((fila) => fila.map((c) => (c === id ? null : c))));
+    const nuevasMatrices = { ...matrices };
+    Object.keys(nuevasMatrices).forEach((key) => {
+      nuevasMatrices[key] = nuevasMatrices[key].map((fila) => fila.map((c) => (c === id ? null : c)));
+    });
+    setMatrices(nuevasMatrices);
   };
 
   const manejarDragStart = (e, agenteId, fila, columna) => {
@@ -481,98 +476,63 @@ const HorarioEditable = () => {
 
   const manejarDragOver = (e) => e.preventDefault();
 
-  const manejarDropEquipo = (e, nuevoSector) => {
+  const manejarDropEquipo = (e, nuevoEquipoDestino) => {
     e.preventDefault();
     const { agenteId } = JSON.parse(e.dataTransfer.getData('text'));
-    setAgentes(agentes.map((a) => (a.id === agenteId ? { ...a, sector: nuevoSector } : a)));
+    setAgentes(agentes.map((a) => (a.id === agenteId ? { ...a, equipo: nuevoEquipoDestino } : a)));
   };
 
-  // Un agente ocupa como mucho una casilla a la vez: se chequean AMBOS
-  // sectores, no solo el que está en pantalla.
-  const agenteYaEnColumna = (columna, agenteId, filaExcluida) => {
-    const enEntrada = matrizEntrada.some(
-      (row, idx) => !(selectedSector === 'entrada' && idx === filaExcluida) && row[columna] === agenteId
-    );
-    const enSalida = matrizSalida.some(
-      (row, idx) => !(selectedSector === 'salida' && idx === filaExcluida) && row[columna] === agenteId
-    );
-    return enEntrada || enSalida;
+  // Un agente ocupa como mucho una casilla a la vez en una hora dada:
+  // se chequean TODAS las vistas del paso, no solo la que está en
+  // pantalla.
+  const agenteYaEnColumna = (columnaAbsoluta, agenteId, vistaExcluida, filaExcluida) => {
+    if (!pasoActual) return false;
+    return pasoActual.vistas.some((vista) => {
+      const matriz = matrices[matrizKey(pasoActual.id, vista.id)];
+      if (!matriz) return false;
+      return matriz.some(
+        (row, idx) => !(vista.id === vistaExcluida && idx === filaExcluida) && row[columnaAbsoluta] === agenteId
+      );
+    });
   };
 
-  const verificarHorasConsecutivas = (matriz, columna, agenteId) => {
+  // Circular (módulo 24) para que el cruce de medianoche cuente como
+  // adyacente — necesario para los turnos que cruzan las 00:00.
+  const verificarHorasConsecutivas = (matriz, columnaAbsoluta, agenteId) => {
     let horasConsecutivas = 1;
-    for (let i = columna - 1; i >= 0; i--) {
-      if (matriz.some((row) => row[i] === agenteId)) horasConsecutivas++;
-      else break;
+    let i = (columnaAbsoluta + HORAS_DIA - 1) % HORAS_DIA;
+    let pasos = 0;
+    while (matriz.some((row) => row[i] === agenteId) && pasos < HORAS_DIA - 1) {
+      horasConsecutivas++;
+      i = (i + HORAS_DIA - 1) % HORAS_DIA;
+      pasos++;
     }
-    for (let i = columna + 1; i < matriz[0].length; i++) {
-      if (matriz.some((row) => row[i] === agenteId)) horasConsecutivas++;
-      else break;
+    i = (columnaAbsoluta + 1) % HORAS_DIA;
+    pasos = 0;
+    while (matriz.some((row) => row[i] === agenteId) && pasos < HORAS_DIA - 1) {
+      horasConsecutivas++;
+      i = (i + 1) % HORAS_DIA;
+      pasos++;
     }
     return horasConsecutivas >= 3;
   };
 
-  // Click en el chip de Casilla: suma la hora siguiente al agente en
-  // función, en la misma casilla donde ya está. Busca la primera
-  // columna libre después de su racha actual (no asume ciegamente
-  // "columna en vivo + 1"), para que funcione también si ya extendió
-  // una vez y ahora quiere sumar una tercera.
-  const extenderCasilla = (agenteId) => {
-    if (columnaEnVivo === null) return;
-
-    let matriz = matrizEntrada;
-    let setMatriz = setMatrizEntrada;
-    let fila = matriz.findIndex((row) => row[columnaEnVivo] === agenteId);
-
-    if (fila === -1) {
-      matriz = matrizSalida;
-      setMatriz = setMatrizSalida;
-      fila = matriz.findIndex((row) => row[columnaEnVivo] === agenteId);
-    }
-
-    if (fila === -1) return;
-
-    let siguienteColumna = columnaEnVivo;
-    while (matriz[fila][siguienteColumna] === agenteId) siguienteColumna++;
-
-    if (siguienteColumna >= horarios.length) {
-      alert('Ya es la última hora del turno.');
-      return;
-    }
-    if (matriz[fila][siguienteColumna] !== null || agenteYaEnColumna(siguienteColumna, agenteId, null)) {
-      alert('La hora siguiente ya está ocupada.');
-      return;
-    }
-
-    const aplicar = () => {
-      const nuevaMatriz = matriz.map((row) => [...row]);
-      nuevaMatriz[fila][siguienteColumna] = agenteId;
-      setMatriz(nuevaMatriz);
-    };
-
-    if (verificarHorasConsecutivas(matriz, siguienteColumna, agenteId)) {
-      setConfirmationModal({ show: true, action: aplicar });
-    } else {
-      aplicar();
-    }
-  };
-
-  const manejarDrop = (e, fila, columna) => {
+  const manejarDrop = (e, fila, columnaPantalla) => {
     e.preventDefault();
-    const { agenteId, fila: filaOrigen, columna: columnaOrigen } = JSON.parse(
+    const { agenteId, fila: filaOrigen, columna: columnaOrigenPantalla } = JSON.parse(
       e.dataTransfer.getData('text')
     );
-
+    const columna = horasTurno[columnaPantalla];
     const nuevaMatriz = matrizActual.map((row) => [...row]);
 
-    if (filaOrigen !== undefined && columnaOrigen !== undefined) {
-      // Movimiento dentro de la matriz.
+    if (filaOrigen !== undefined && columnaOrigenPantalla !== undefined) {
+      const columnaOrigen = horasTurno[columnaOrigenPantalla];
       if (columna === columnaOrigen) {
         nuevaMatriz[filaOrigen][columnaOrigen] = null;
         nuevaMatriz[fila][columna] = agenteId;
         setMatrizActual(nuevaMatriz);
       } else if (!nuevaMatriz[fila][columna]) {
-        if (agenteYaEnColumna(columna, agenteId, filaOrigen)) {
+        if (agenteYaEnColumna(columna, agenteId, vistaActual.id, filaOrigen)) {
           alert('Ese agente ya está asignado en este horario.');
           return;
         }
@@ -590,8 +550,7 @@ const HorarioEditable = () => {
         alert('Esa posición ya está ocupada por otro agente.');
       }
     } else {
-      // Nueva asignación desde el panel de equipos.
-      if (agenteYaEnColumna(columna, agenteId, null)) {
+      if (agenteYaEnColumna(columna, agenteId, null, null)) {
         alert('Ese agente ya está asignado en este horario.');
         return;
       }
@@ -606,12 +565,13 @@ const HorarioEditable = () => {
           aplicar();
         }
       } else {
-        alert(`La posición (${fila + 1}, ${columna + 1}) ya está ocupada.`);
+        alert('Esa posición ya está ocupada.');
       }
     }
   };
 
-  const manejarClickFicha = (fila, columna) => {
+  const manejarClickFicha = (fila, columnaPantalla) => {
+    const columna = horasTurno[columnaPantalla];
     const nuevaMatriz = matrizActual.map((row) => [...row]);
     if (nuevaMatriz[fila][columna] !== null) {
       nuevaMatriz[fila][columna] = null;
@@ -619,12 +579,62 @@ const HorarioEditable = () => {
     }
   };
 
+  // Click en el chip de Casilla: suma la hora siguiente al agente en
+  // función, buscando en TODAS las vistas del paso. Circular (módulo
+  // 24) para que funcione también cruzando medianoche.
+  const extenderCasilla = (agenteId) => {
+    if (!pasoActual) return;
+
+    let vistaEncontrada = null;
+    let matrizEncontrada = null;
+    let filaEncontrada = -1;
+
+    for (const vista of pasoActual.vistas) {
+      const matriz = matrices[matrizKey(pasoActual.id, vista.id)];
+      if (!matriz) continue;
+      const fila = matriz.findIndex((row) => row[horaAbsolutaActual] === agenteId);
+      if (fila !== -1) {
+        vistaEncontrada = vista;
+        matrizEncontrada = matriz;
+        filaEncontrada = fila;
+        break;
+      }
+    }
+
+    if (!vistaEncontrada) return;
+
+    let siguiente = horaAbsolutaActual;
+    let pasosCount = 0;
+    while (matrizEncontrada[filaEncontrada][siguiente] === agenteId && pasosCount < HORAS_DIA) {
+      siguiente = (siguiente + 1) % HORAS_DIA;
+      pasosCount++;
+    }
+
+    if (matrizEncontrada[filaEncontrada][siguiente] !== null || agenteYaEnColumna(siguiente, agenteId, null, null)) {
+      alert('La hora siguiente ya está ocupada.');
+      return;
+    }
+
+    const aplicar = () => {
+      const nuevaMatriz = matrizEncontrada.map((row) => [...row]);
+      nuevaMatriz[filaEncontrada][siguiente] = agenteId;
+      setMatrices({ ...matrices, [matrizKey(pasoActual.id, vistaEncontrada.id)]: nuevaMatriz });
+    };
+
+    if (verificarHorasConsecutivas(matrizEncontrada, siguiente, agenteId)) {
+      setConfirmationModal({ show: true, action: aplicar });
+    } else {
+      aplicar();
+    }
+  };
+
   const ordenarAgentesPorEquipo = () => {
-    let ordenados = agentes.filter(
+    if (!pasoActual) return [];
+    let ordenados = agentesDelPaso.filter(
       (a) =>
         !idsEnCasillaAhora.has(a.id) &&
-        (a.sectorPrincipal || 'entrada') === selectedSector &&
-        (a.horarioPrincipal || 'mañana') === selectedShift
+        (pasoActual.vistas.length <= 1 || a.vistaPrincipal === selectedVistaId) &&
+        a.turnoPrincipal === selectedTurnoId
     );
 
     if (ordenamiento === 'alfabetico') {
@@ -637,13 +647,33 @@ const HorarioEditable = () => {
       );
     }
 
-    return EQUIPOS.map((equipo) => ({
+    return pasoActual.equipos.map((equipo) => ({
       equipo,
-      agentes: ordenados.filter((a) => a.sector === equipo),
+      agentes: ordenados.filter((a) => a.equipo === equipo),
     }));
   };
 
-  const agentesEnCasillaAhora = agentes.filter((a) => idsEnCasillaAhora.has(a.id));
+  const agentesEnCasillaAhora = agentesDelPaso.filter((a) => idsEnCasillaAhora.has(a.id));
+
+  // =========================================================
+  // RENDER
+  // =========================================================
+
+  if (pasos.length === 0) {
+    return (
+      <div className="p-4 bg-gray-100 min-h-screen">
+        <h1 className="text-2xl font-bold mb-4">Gestión de horarios</h1>
+        <p className="mb-4">Todavía no hay ninguna plantilla de paso creada.</p>
+        <Link to="/plantillas" className="bg-blue-500 text-white p-2 rounded inline-flex items-center">
+          <Settings size={18} className="mr-2" /> Crear la primera plantilla
+        </Link>
+      </div>
+    );
+  }
+
+  if (!pasoActual || !vistaActual || !turnoActual) {
+    return <div className="p-4">Cargando…</div>;
+  }
 
   return (
     <div className="p-4 bg-gray-100 min-h-screen">
@@ -672,105 +702,119 @@ const HorarioEditable = () => {
         </div>
       )}
 
-      <div className="mb-4 flex space-x-4">
-        <select value={selectedShift} onChange={(e) => setSelectedShift(e.target.value)} className="border p-2">
-          <option value="mañana">Mañana</option>
-          <option value="tarde">Tarde</option>
-          <option value="noche">Noche</option>
+      <div className="mb-4 flex space-x-4 items-center flex-wrap gap-2">
+        <select
+          value={pasoActual.id}
+          onChange={(e) => setSelectedPasoId(e.target.value)}
+          className="border p-2 font-semibold"
+        >
+          {pasos.map((p) => (
+            <option key={p.id} value={p.id}>{p.nombre}</option>
+          ))}
         </select>
-        <select value={selectedSector} onChange={(e) => setSelectedSector(e.target.value)} className="border p-2">
-          <option value="entrada">Entrada</option>
-          <option value="salida">Salida</option>
+
+        <select value={selectedTurnoId || ''} onChange={(e) => setSelectedTurnoId(e.target.value)} className="border p-2">
+          {pasoActual.turnos.map((t) => (
+            <option key={t.id} value={t.id}>{t.nombre}</option>
+          ))}
         </select>
+
+        {pasoActual.vistas.length > 1 && (
+          <select value={selectedVistaId || ''} onChange={(e) => setSelectedVistaId(e.target.value)} className="border p-2">
+            {pasoActual.vistas.map((v) => (
+              <option key={v.id} value={v.id}>{v.nombre}</option>
+            ))}
+          </select>
+        )}
+
+        <Link to="/plantillas" className="text-gray-500 hover:text-gray-700 flex items-center text-sm">
+          <Settings size={16} className="mr-1" /> Plantillas
+        </Link>
       </div>
 
       <div className="mb-4">
         <h2 className="text-xl font-bold mb-2">Registrar Agentes</h2>
-        <div className="flex items-center mb-2">
+        <div className="flex items-center mb-2 flex-wrap gap-2">
           <input
             type="text"
             value={nuevoNombre}
             onChange={(e) => setNuevoNombre(e.target.value)}
-            className="border p-2 mr-2"
+            className="border p-2"
             placeholder="Nombre"
           />
           <input
             type="text"
             value={nuevoApellido}
             onChange={(e) => setNuevoApellido(e.target.value)}
-            className="border p-2 mr-2"
+            className="border p-2"
             placeholder="Apellido"
           />
-          <select value={nuevoSector} onChange={(e) => setNuevoSector(e.target.value)} className="border p-2 mr-2">
-            {EQUIPOS.map((equipo) => (
+          <select value={nuevoEquipo} onChange={(e) => setNuevoEquipo(e.target.value)} className="border p-2">
+            {pasoActual.equipos.map((equipo) => (
               <option key={equipo} value={equipo}>{equipo}</option>
             ))}
           </select>
+          {pasoActual.vistas.length > 1 && (
+            <select
+              value={nuevoVistaPrincipal || ''}
+              onChange={(e) => setNuevoVistaPrincipal(e.target.value)}
+              className="border p-2"
+              title="Vista principal"
+            >
+              {pasoActual.vistas.map((v) => (
+                <option key={v.id} value={v.id}>{v.nombre}</option>
+              ))}
+            </select>
+          )}
           <select
-            value={nuevoSectorPrincipal}
-            onChange={(e) => setNuevoSectorPrincipal(e.target.value)}
-            className="border p-2 mr-2"
-            title="Sector principal del agente"
+            value={nuevoTurnoPrincipal || ''}
+            onChange={(e) => setNuevoTurnoPrincipal(e.target.value)}
+            className="border p-2"
+            title="Turno principal"
           >
-            <option value="entrada">Entrada</option>
-            <option value="salida">Salida</option>
-          </select>
-          <select
-            value={nuevoHorarioPrincipal}
-            onChange={(e) => setNuevoHorarioPrincipal(e.target.value)}
-            className="border p-2 mr-2"
-            title="Turno principal del agente"
-          >
-            <option value="mañana">Mañana</option>
-            <option value="tarde">Tarde</option>
-            <option value="noche">Noche</option>
+            {pasoActual.turnos.map((t) => (
+              <option key={t.id} value={t.id}>{t.nombre}</option>
+            ))}
           </select>
           <button onClick={agregarAgente} className="bg-blue-500 text-white p-2 rounded">
             <Plus size={20} />
           </button>
         </div>
 
-        <div className="mt-4 mb-4">
-          <button
-            onClick={exportarCSV}
-            className="bg-green-500 text-white p-2 rounded shadow transition-transform transform hover:scale-105 hover:shadow-lg"
-          >
+        <div className="mt-4 mb-4 flex items-center gap-2">
+          <button onClick={exportarCSV} className="bg-green-500 text-white p-2 rounded shadow hover:scale-105 transition-transform">
             Exportar a CSV
           </button>
           <input type="file" accept=".csv" onChange={importarCSV} className="p-2 border" />
-          <Link
-            to="/estadisticas"
-            className="bg-purple-500 text-white p-2 w-44 rounded mr-2 flex items-center shadow transition-transform transform hover:scale-105 hover:shadow-lg"
-          >
-            <BarChart2 size={20} className="mr-2" />
-            Ver Estadísticas
+          <Link to="/estadisticas" className="bg-purple-500 text-white p-2 rounded flex items-center shadow hover:scale-105 transition-transform">
+            <BarChart2 size={20} className="mr-2" /> Ver Estadísticas
           </Link>
         </div>
 
         <div className="flex items-center mb-2">
           <button
             onClick={() => setOrdenamiento(ordenamiento === 'alfabetico' ? 'horas' : 'alfabetico')}
-            className="bg-gray-300 text-gray-700 p-2 rounded flex items-center shadow transition-transform transform hover:scale-105 hover:shadow-lg"
+            className="bg-gray-300 text-gray-700 p-2 rounded flex items-center shadow hover:scale-105 transition-transform"
           >
             <ArrowUpDown size={20} className="mr-2" />
             {ordenamiento === 'alfabetico' ? 'Ordenado alfabeticamente' : 'Ordenado por carga horaria'}
           </button>
         </div>
 
-        <div className="flex space-x-4">
+        <div className="flex space-x-4 flex-wrap gap-4">
           {ordenarAgentesPorEquipo().map(({ equipo, agentes: agentesDelEquipo }) => (
             <div
               key={equipo}
-              className="flex-1 bg-white p-4 rounded shadow"
+              className="flex-1 bg-white p-4 rounded shadow min-w-[200px]"
               onDragOver={manejarDragOver}
               onDrop={(e) => manejarDropEquipo(e, equipo)}
             >
-              <h3 className="text-lg font-semibold mb-2 capitalize">{equipo}</h3>
+              <h3 className="text-lg font-semibold mb-2">{equipo}</h3>
               <div className="flex flex-col gap-2">
                 {agentesDelEquipo.map((agente) => (
                   <div
                     key={agente.id}
-                    className={`${agente.color} p-2 rounded flex items-center text-white cursor-pointer shadow transition-transform transform hover:scale-105 hover:shadow-lg`}
+                    className={`${agente.color} p-2 rounded flex items-center text-white cursor-pointer shadow hover:scale-105 transition-transform`}
                     draggable
                     onDragStart={(e) => manejarDragStart(e, agente.id)}
                   >
@@ -784,15 +828,9 @@ const HorarioEditable = () => {
             </div>
           ))}
 
-          {/* Panel de Casilla: calculado en vivo según la hora actual y
-              la grilla. Click para sumarle la hora siguiente al mismo
-              agente sin sacarlo primero — no es arrastrable a propósito,
-              para no confundir "sumar hora" con "cambiar de equipo" o
-              "mover de casilla". Muestra las horas totales acumuladas
-              como referencia para decidir si conviene extenderle otra. */}
-          <div className="flex-1 bg-white p-4 rounded shadow opacity-90">
+          <div className="flex-1 bg-white p-4 rounded shadow opacity-90 min-w-[200px]">
             <h3 className="text-lg font-semibold mb-2">
-              Casilla {columnaEnVivo !== null ? `(${horarios[columnaEnVivo]})` : '(fuera de este turno)'}
+              Casilla {columnaEnVivoPantalla !== null ? `(${etiquetaHora(horaAbsolutaActual)})` : '(fuera de este turno)'}
             </h3>
             <div className="flex flex-col gap-2">
               {agentesEnCasillaAhora.map((agente) => {
@@ -813,7 +851,7 @@ const HorarioEditable = () => {
                           setInfoCelda(infoCelda === chipKey ? null : chipKey);
                         }}
                         className="absolute -top-1 -right-1 bg-white rounded-full shadow"
-                        title="Sector y/o turno principal distinto al de esta pestaña"
+                        title="Vista y/o turno principal distinto al de esta pestaña"
                       >
                         <Info size={14} className="text-blue-600" />
                       </button>
@@ -830,10 +868,7 @@ const HorarioEditable = () => {
           </div>
         </div>
 
-        <button
-          onClick={limpiarLocalStorage}
-          className="bg-red-500 text-white p-2 rounded ml-2 shadow transition-transform transform hover:scale-105 hover:shadow-lg"
-        >
+        <button onClick={limpiarLocalStorage} className="bg-red-500 text-white p-2 rounded mt-4 shadow hover:scale-105 transition-transform">
           Borrar Todo <Trash2 size={14} />
         </button>
       </div>
@@ -846,14 +881,14 @@ const HorarioEditable = () => {
           onChange={(e) => setSelectedHorarioCasilla(Number(e.target.value))}
         >
           <option value="" disabled>Selecciona un horario</option>
-          {horarios.map((horario, index) => (
-            <option key={index} value={index}>{horario}</option>
+          {horasTurno.map((h, index) => (
+            <option key={index} value={index}>{etiquetaHora(h)}</option>
           ))}
           <option value={-1}>Equipos</option>
         </select>
         <button
           onClick={generarTextoHorario}
-          className="bg-blue-500 text-white p-2 rounded ml-2 cursor-pointer shadow transition-transform transform hover:scale-105 hover:shadow-lg"
+          className="bg-blue-500 text-white p-2 rounded ml-2 cursor-pointer shadow hover:scale-105 transition-transform"
           disabled={selectedHorarioCasilla === null}
         >
           Generar Texto
@@ -864,7 +899,7 @@ const HorarioEditable = () => {
         <div className="mt-4 bg-white p-4 rounded shadow">
           <h3 className="text-lg font-semibold mb-2">Texto Generado</h3>
           <pre className="whitespace-pre-wrap">{horarioTexto}</pre>
-          <button onClick={eliminarTextoHorario} className="bg-red-500 text-white p-2 rounded mt-2 shadow transition-transform transform hover:scale-105 hover:shadow-lg">
+          <button onClick={eliminarTextoHorario} className="bg-red-500 text-white p-2 rounded mt-2 shadow hover:scale-105 transition-transform">
             Eliminar Texto
           </button>
         </div>
@@ -874,36 +909,34 @@ const HorarioEditable = () => {
         <table className="w-full bg-white shadow-md rounded">
           <thead>
             <tr>
-              <th className="border p-2 w-32">{SECTOR_LABEL[selectedSector]}</th>
-              {horarios.map((horario, index) => (
-                <th
-                  key={index}
-                  className={`border p-2 ${index === columnaEnVivo ? 'bg-yellow-100' : ''}`}
-                >
-                  {horario}
+              <th className="border p-2 w-32">{vistaActual.nombre || 'Casillas'}</th>
+              {horasTurno.map((h, index) => (
+                <th key={index} className={`border p-2 ${index === columnaEnVivoPantalla ? 'bg-yellow-100' : ''}`}>
+                  {etiquetaHora(h)}
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {matrizActual.map((fila, filaIndex) => (
-              <tr key={filaIndex}>
-                <td className="border p-2 w-32 font-bold">{encabezadosFilas[filaIndex]}</td>
-                {fila.map((celda, columnaIndex) => {
+            {vistaActual.casillas.map((casilla, filaIndex) => (
+              <tr key={casilla.id}>
+                <td className="border p-2 w-32 font-bold">{casilla.nombre}</td>
+                {horasTurno.map((h, columnaIndex) => {
+                  const celda = matrizActual[filaIndex]?.[h] ?? null;
                   const agente = celda ? agentePorId(celda) : null;
                   const textoAjeno = agente ? infoAjeno(agente) : null;
-                  const cellKey = `${filaIndex}-${columnaIndex}`;
+                  const cellKey = `${filaIndex}-${h}`;
                   return (
                     <td
                       key={columnaIndex}
-                      className={`relative border p-2 w-24 h-12 ${columnaIndex === columnaEnVivo ? 'bg-yellow-50' : ''}`}
+                      className={`relative border p-2 w-24 h-12 ${columnaIndex === columnaEnVivoPantalla ? 'bg-yellow-50' : ''}`}
                       onDragOver={manejarDragOver}
                       onDrop={(e) => manejarDrop(e, filaIndex, columnaIndex)}
                       onClick={() => manejarClickFicha(filaIndex, columnaIndex)}
                     >
                       {agente && (
                         <div
-                          className={`w-full h-full flex items-center justify-center ${agente.color} text-white rounded cursor-pointer shadow transition-transform transform hover:scale-105 hover:shadow-lg`}
+                          className={`w-full h-full flex items-center justify-center ${agente.color} text-white rounded cursor-pointer shadow hover:scale-105 transition-transform`}
                           draggable
                           onDragStart={(e) => manejarDragStart(e, agente.id, filaIndex, columnaIndex)}
                         >
@@ -917,7 +950,7 @@ const HorarioEditable = () => {
                             setInfoCelda(infoCelda === cellKey ? null : cellKey);
                           }}
                           className="absolute -top-1 -right-1 bg-white rounded-full shadow"
-                          title="Sector y/o turno principal distinto al de esta pestaña"
+                          title="Vista y/o turno principal distinto al de esta pestaña"
                         >
                           <Info size={14} className="text-blue-600" />
                         </button>
@@ -945,6 +978,7 @@ const App = () => {
       <Routes>
         <Route path="/" element={<HorarioEditable />} />
         <Route path="/estadisticas" element={<EstadisticasCasillas />} />
+        <Route path="/plantillas" element={<PasoManager />} />
       </Routes>
     </Router>
   );
