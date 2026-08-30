@@ -236,11 +236,11 @@ const HorarioEditable = () => {
   // Índice de PANTALLA (posición dentro de horasTurno) que corresponde
   // a la hora real ahora mismo, o null si el turno seleccionado no
   // incluye la hora actual. Solo se usa para resaltar visualmente.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const columnaEnVivoPantalla = useMemo(() => {
     const horaActual = new Date().getHours();
     const idx = horasTurno.indexOf(horaActual);
     return idx === -1 ? null : idx;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [horasTurno, tick]);
 
   const horaAbsolutaActual = new Date().getHours();
@@ -502,14 +502,18 @@ const HorarioEditable = () => {
     let horasConsecutivas = 1;
     let i = (columnaAbsoluta + HORAS_DIA - 1) % HORAS_DIA;
     let pasos = 0;
-    while (matriz.some((row) => row[i] === agenteId) && pasos < HORAS_DIA - 1) {
+    while (pasos < HORAS_DIA - 1) {
+      const columnaChequeada = i;
+      if (!matriz.some((row) => row[columnaChequeada] === agenteId)) break;
       horasConsecutivas++;
       i = (i + HORAS_DIA - 1) % HORAS_DIA;
       pasos++;
     }
     i = (columnaAbsoluta + 1) % HORAS_DIA;
     pasos = 0;
-    while (matriz.some((row) => row[i] === agenteId) && pasos < HORAS_DIA - 1) {
+    while (pasos < HORAS_DIA - 1) {
+      const columnaChequeada = i;
+      if (!matriz.some((row) => row[columnaChequeada] === agenteId)) break;
       horasConsecutivas++;
       i = (i + 1) % HORAS_DIA;
       pasos++;
