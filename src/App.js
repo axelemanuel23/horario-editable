@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { BrowserRouter as Router, Route, Routes, Link } from 'react-router-dom';
-import { Plus, Trash2, ArrowUpDown, BarChart2 } from 'lucide-react';
+import { Plus, Trash2, ArrowUpDown, BarChart2, Info } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import Papa from 'papaparse';
 import EstadisticasCasillas from './EstadisticasCasillas';
@@ -118,6 +118,10 @@ const HorarioEditable = () => {
   const [nuevoNombre, setNuevoNombre] = useState('');
   const [nuevoApellido, setNuevoApellido] = useState('');
   const [nuevoSector, setNuevoSector] = useState('Micro');
+  const [nuevoSectorPrincipal, setNuevoSectorPrincipal] = useState(selectedSector);
+  // Celda cuyo cuadro informativo (sector principal ajeno) está
+  // abierto ahora mismo. Solo uno a la vez, como pediste.
+  const [infoCelda, setInfoCelda] = useState(null);
   const [ordenamiento, setOrdenamiento] = useState('alfabetico');
 
   const [importedData, setImportedData] = useState(null);
@@ -301,8 +305,11 @@ const HorarioEditable = () => {
     );
 
     const datosCSV = [
-      ['tipo', 'id', 'nombre', 'apellido', 'horas', 'sector', 'color'],
-      ...agentes.map((a) => ['agente', a.id, a.nombre, a.apellido, horasPorAgente.get(a.id) || 0, a.sector, a.color]),
+      ['tipo', 'id', 'nombre', 'apellido', 'horas', 'sector', 'color', 'sectorPrincipal'],
+      ...agentes.map((a) => [
+        'agente', a.id, a.nombre, a.apellido, horasPorAgente.get(a.id) || 0, a.sector, a.color,
+        a.sectorPrincipal || 'entrada',
+      ]),
       ['encabezado', selectedSector, ...encabezadosFilas],
       ['horario', ...horarios],
       ...matrizConNombres.map((fila, index) => ['matriz', index, ...fila]),
@@ -346,6 +353,7 @@ const HorarioEditable = () => {
               horas: parseInt(fila[4], 10),
               sector: fila[5],
               color: fila[6],
+              sectorPrincipal: fila[7] || 'entrada',
             });
             break;
           case 'encabezado':
@@ -433,6 +441,7 @@ const HorarioEditable = () => {
         horas: 0,
         color,
         sector: nuevoSector,
+        sectorPrincipal: nuevoSectorPrincipal,
       };
       setAgentes([...agentes, nuevoAgente]);
       setNuevoNombre('');
@@ -591,7 +600,9 @@ const HorarioEditable = () => {
   };
 
   const ordenarAgentesPorEquipo = () => {
-    let ordenados = agentes.filter((a) => !idsEnCasillaAhora.has(a.id));
+    let ordenados = agentes.filter(
+      (a) => !idsEnCasillaAhora.has(a.id) && (a.sectorPrincipal || 'entrada') === selectedSector
+    );
 
     if (ordenamiento === 'alfabetico') {
       ordenados = [...ordenados].sort((a, b) =>
@@ -672,6 +683,15 @@ const HorarioEditable = () => {
               <option key={equipo} value={equipo}>{equipo}</option>
             ))}
           </select>
+          <select
+            value={nuevoSectorPrincipal}
+            onChange={(e) => setNuevoSectorPrincipal(e.target.value)}
+            className="border p-2 mr-2"
+            title="Sector principal del agente"
+          >
+            <option value="entrada">Entrada</option>
+            <option value="salida">Salida</option>
+          </select>
           <button onClick={agregarAgente} className="bg-blue-500 text-white p-2 rounded">
             <Plus size={20} />
           </button>
@@ -735,9 +755,8 @@ const HorarioEditable = () => {
               la grilla. Click para sumarle la hora siguiente al mismo
               agente sin sacarlo primero — no es arrastrable a propósito,
               para no confundir "sumar hora" con "cambiar de equipo" o
-              "mover de casilla". No muestra horas: mientras está en
-              función no aporta a la lectura de "cuánto lleva acumulado
-              fuera de casilla". */}
+              "mover de casilla". Muestra las horas totales acumuladas
+              como referencia para decidir si conviene extenderle otra. */}
           <div className="flex-1 bg-white p-4 rounded shadow opacity-90">
             <h3 className="text-lg font-semibold mb-2">
               Casilla {columnaEnVivo !== null ? `(${horarios[columnaEnVivo]})` : '(fuera de este turno)'}
@@ -750,7 +769,7 @@ const HorarioEditable = () => {
                   onClick={() => extenderCasilla(agente.id)}
                   title="Click para sumarle la hora siguiente"
                 >
-                  {agente.apellido}, {agente.nombre}
+                  {agente.apellido}, {agente.nombre} ({horasPorAgente.get(agente.id) || 0} h)
                 </div>
               ))}
             </div>
@@ -818,10 +837,12 @@ const HorarioEditable = () => {
                 <td className="border p-2 w-32 font-bold">{encabezadosFilas[filaIndex]}</td>
                 {fila.map((celda, columnaIndex) => {
                   const agente = celda ? agentePorId(celda) : null;
+                  const esAjeno = agente && (agente.sectorPrincipal || 'entrada') !== selectedSector;
+                  const cellKey = `${filaIndex}-${columnaIndex}`;
                   return (
                     <td
                       key={columnaIndex}
-                      className={`border p-2 w-24 h-12 ${columnaIndex === columnaEnVivo ? 'bg-yellow-50' : ''}`}
+                      className={`relative border p-2 w-24 h-12 ${columnaIndex === columnaEnVivo ? 'bg-yellow-50' : ''}`}
                       onDragOver={manejarDragOver}
                       onDrop={(e) => manejarDrop(e, filaIndex, columnaIndex)}
                       onClick={() => manejarClickFicha(filaIndex, columnaIndex)}
@@ -833,6 +854,23 @@ const HorarioEditable = () => {
                           onDragStart={(e) => manejarDragStart(e, agente.id, filaIndex, columnaIndex)}
                         >
                           {agente.apellido}
+                        </div>
+                      )}
+                      {esAjeno && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setInfoCelda(infoCelda === cellKey ? null : cellKey);
+                          }}
+                          className="absolute -top-1 -right-1 bg-white rounded-full shadow"
+                          title="Sector principal distinto al de esta pestaña"
+                        >
+                          <Info size={14} className="text-blue-600" />
+                        </button>
+                      )}
+                      {esAjeno && infoCelda === cellKey && (
+                        <div className="absolute z-10 top-full left-0 mt-1 bg-black text-white text-xs p-1 rounded whitespace-nowrap shadow-lg">
+                          Agente de {agente.sectorPrincipal === 'entrada' ? 'Entrada' : 'Salida'}
                         </div>
                       )}
                     </td>
