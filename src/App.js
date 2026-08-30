@@ -36,7 +36,7 @@ const EQUIPOS = ['Micro', 'Corredor'];
 const SHIFT_HORARIOS = {
   mañana: ['06:00', '07:00', '08:00', '09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00'],
   tarde: ['15:00', '16:00', '17:00', '18:00', '19:00', '20:00', '21:00', '22:00', '23:00', '00:00'],
-  noche: ['21:00', '22:00', '23:00', '00:00', '01:00', '02:00', '03:00', '04:00', '05:00', '06:00'],
+  noche: ['20:00', '21:00', '22:00', '23:00', '00:00', '01:00', '02:00', '03:00', '04:00', '05:00'],
 };
 
 // =========================================================
@@ -119,6 +119,7 @@ const HorarioEditable = () => {
   const [nuevoApellido, setNuevoApellido] = useState('');
   const [nuevoSector, setNuevoSector] = useState('Micro');
   const [nuevoSectorPrincipal, setNuevoSectorPrincipal] = useState(selectedSector);
+  const [nuevoHorarioPrincipal, setNuevoHorarioPrincipal] = useState(selectedShift);
   // Celda cuyo cuadro informativo (sector principal ajeno) está
   // abierto ahora mismo. Solo uno a la vez, como pediste.
   const [infoCelda, setInfoCelda] = useState(null);
@@ -245,6 +246,23 @@ const HorarioEditable = () => {
   const agentePorId = (id) => agentes.find((a) => a.id === id);
   const nombreCompleto = (agente) => `${agente.nombre} ${agente.apellido}`;
 
+  const CAPITALIZADO = { mañana: 'Mañana', tarde: 'Tarde', noche: 'Noche' };
+
+  // Un agente es "ajeno" a la pestaña actual si su sector principal y/o
+  // su turno principal no coinciden con lo que estás mirando ahora
+  // (ej. viendo Tarde, pero es un agente de turno Mañana haciendo la
+  // casilla de las 15:00, que es frontera entre ambos turnos).
+  const infoAjeno = (agente) => {
+    const ajenoSector = (agente.sectorPrincipal || 'entrada') !== selectedSector;
+    const ajenoTurno = (agente.horarioPrincipal || 'mañana') !== selectedShift;
+    if (!ajenoSector && !ajenoTurno) return null;
+
+    const partes = [];
+    if (ajenoSector) partes.push(agente.sectorPrincipal === 'entrada' ? 'Entrada' : 'Salida');
+    if (ajenoTurno) partes.push(`turno ${CAPITALIZADO[agente.horarioPrincipal] || agente.horarioPrincipal}`);
+    return `Agente de ${partes.join(' — ')}`;
+  };
+
   const matrizActual = selectedSector === 'entrada' ? matrizEntrada : matrizSalida;
   const setMatrizActual = selectedSector === 'entrada' ? setMatrizEntrada : setMatrizSalida;
 
@@ -305,10 +323,10 @@ const HorarioEditable = () => {
     );
 
     const datosCSV = [
-      ['tipo', 'id', 'nombre', 'apellido', 'horas', 'sector', 'color', 'sectorPrincipal'],
+      ['tipo', 'id', 'nombre', 'apellido', 'horas', 'sector', 'color', 'sectorPrincipal', 'horarioPrincipal'],
       ...agentes.map((a) => [
         'agente', a.id, a.nombre, a.apellido, horasPorAgente.get(a.id) || 0, a.sector, a.color,
-        a.sectorPrincipal || 'entrada',
+        a.sectorPrincipal || 'entrada', a.horarioPrincipal || 'mañana',
       ]),
       ['encabezado', selectedSector, ...encabezadosFilas],
       ['horario', ...horarios],
@@ -354,6 +372,7 @@ const HorarioEditable = () => {
               sector: fila[5],
               color: fila[6],
               sectorPrincipal: fila[7] || 'entrada',
+              horarioPrincipal: fila[8] || 'mañana',
             });
             break;
           case 'encabezado':
@@ -442,6 +461,7 @@ const HorarioEditable = () => {
         color,
         sector: nuevoSector,
         sectorPrincipal: nuevoSectorPrincipal,
+        horarioPrincipal: nuevoHorarioPrincipal,
       };
       setAgentes([...agentes, nuevoAgente]);
       setNuevoNombre('');
@@ -601,7 +621,10 @@ const HorarioEditable = () => {
 
   const ordenarAgentesPorEquipo = () => {
     let ordenados = agentes.filter(
-      (a) => !idsEnCasillaAhora.has(a.id) && (a.sectorPrincipal || 'entrada') === selectedSector
+      (a) =>
+        !idsEnCasillaAhora.has(a.id) &&
+        (a.sectorPrincipal || 'entrada') === selectedSector &&
+        (a.horarioPrincipal || 'mañana') === selectedShift
     );
 
     if (ordenamiento === 'alfabetico') {
@@ -692,6 +715,16 @@ const HorarioEditable = () => {
             <option value="entrada">Entrada</option>
             <option value="salida">Salida</option>
           </select>
+          <select
+            value={nuevoHorarioPrincipal}
+            onChange={(e) => setNuevoHorarioPrincipal(e.target.value)}
+            className="border p-2 mr-2"
+            title="Turno principal del agente"
+          >
+            <option value="mañana">Mañana</option>
+            <option value="tarde">Tarde</option>
+            <option value="noche">Noche</option>
+          </select>
           <button onClick={agregarAgente} className="bg-blue-500 text-white p-2 rounded">
             <Plus size={20} />
           </button>
@@ -762,16 +795,37 @@ const HorarioEditable = () => {
               Casilla {columnaEnVivo !== null ? `(${horarios[columnaEnVivo]})` : '(fuera de este turno)'}
             </h3>
             <div className="flex flex-col gap-2">
-              {agentesEnCasillaAhora.map((agente) => (
-                <div
-                  key={agente.id}
-                  className={`${agente.color} p-2 rounded text-white shadow cursor-pointer`}
-                  onClick={() => extenderCasilla(agente.id)}
-                  title="Click para sumarle la hora siguiente"
-                >
-                  {agente.apellido}, {agente.nombre} ({horasPorAgente.get(agente.id) || 0} h)
-                </div>
-              ))}
+              {agentesEnCasillaAhora.map((agente) => {
+                const textoAjeno = infoAjeno(agente);
+                const chipKey = `casilla-${agente.id}`;
+                return (
+                  <div
+                    key={agente.id}
+                    className={`relative ${agente.color} p-2 rounded text-white shadow cursor-pointer`}
+                    onClick={() => extenderCasilla(agente.id)}
+                    title="Click para sumarle la hora siguiente"
+                  >
+                    {agente.apellido}, {agente.nombre} ({horasPorAgente.get(agente.id) || 0} h)
+                    {textoAjeno && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setInfoCelda(infoCelda === chipKey ? null : chipKey);
+                        }}
+                        className="absolute -top-1 -right-1 bg-white rounded-full shadow"
+                        title="Sector y/o turno principal distinto al de esta pestaña"
+                      >
+                        <Info size={14} className="text-blue-600" />
+                      </button>
+                    )}
+                    {textoAjeno && infoCelda === chipKey && (
+                      <div className="absolute z-10 top-full left-0 mt-1 bg-black text-white text-xs p-1 rounded whitespace-nowrap shadow-lg">
+                        {textoAjeno}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -837,7 +891,7 @@ const HorarioEditable = () => {
                 <td className="border p-2 w-32 font-bold">{encabezadosFilas[filaIndex]}</td>
                 {fila.map((celda, columnaIndex) => {
                   const agente = celda ? agentePorId(celda) : null;
-                  const esAjeno = agente && (agente.sectorPrincipal || 'entrada') !== selectedSector;
+                  const textoAjeno = agente ? infoAjeno(agente) : null;
                   const cellKey = `${filaIndex}-${columnaIndex}`;
                   return (
                     <td
@@ -856,21 +910,21 @@ const HorarioEditable = () => {
                           {agente.apellido}
                         </div>
                       )}
-                      {esAjeno && (
+                      {textoAjeno && (
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             setInfoCelda(infoCelda === cellKey ? null : cellKey);
                           }}
                           className="absolute -top-1 -right-1 bg-white rounded-full shadow"
-                          title="Sector principal distinto al de esta pestaña"
+                          title="Sector y/o turno principal distinto al de esta pestaña"
                         >
                           <Info size={14} className="text-blue-600" />
                         </button>
                       )}
-                      {esAjeno && infoCelda === cellKey && (
+                      {textoAjeno && infoCelda === cellKey && (
                         <div className="absolute z-10 top-full left-0 mt-1 bg-black text-white text-xs p-1 rounded whitespace-nowrap shadow-lg">
-                          Agente de {agente.sectorPrincipal === 'entrada' ? 'Entrada' : 'Salida'}
+                          {textoAjeno}
                         </div>
                       )}
                     </td>
