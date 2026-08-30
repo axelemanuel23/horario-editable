@@ -269,6 +269,23 @@ const HorarioEditable = () => {
     return ids;
   }, [matrizEntrada, matrizSalida, columnaEnVivo]);
 
+  // Horas totales ya asignadas a cada agente, contando celdas ocupadas
+  // en TODA la grilla (ambos sectores). Se calcula, no se guarda: así
+  // nunca queda desincronizado de lo que realmente hay en la matriz.
+  const horasPorAgente = useMemo(() => {
+    const conteo = new Map();
+    const contar = (matriz) => {
+      matriz.forEach((fila) => {
+        fila.forEach((id) => {
+          if (id) conteo.set(id, (conteo.get(id) || 0) + 1);
+        });
+      });
+    };
+    contar(matrizEntrada);
+    contar(matrizSalida);
+    return conteo;
+  }, [matrizEntrada, matrizSalida]);
+
   // =========================================================
   // EXPORTAR / IMPORTAR CSV
   //
@@ -285,7 +302,7 @@ const HorarioEditable = () => {
 
     const datosCSV = [
       ['tipo', 'id', 'nombre', 'apellido', 'horas', 'sector', 'color'],
-      ...agentes.map((a) => ['agente', a.id, a.nombre, a.apellido, a.horas, a.sector, a.color]),
+      ...agentes.map((a) => ['agente', a.id, a.nombre, a.apellido, horasPorAgente.get(a.id) || 0, a.sector, a.color]),
       ['encabezado', selectedSector, ...encabezadosFilas],
       ['horario', ...horarios],
       ...matrizConNombres.map((fila, index) => ['matriz', index, ...fila]),
@@ -466,6 +483,51 @@ const HorarioEditable = () => {
     return horasConsecutivas >= 3;
   };
 
+  // Click en el chip de Casilla: suma la hora siguiente al agente en
+  // función, en la misma casilla donde ya está. Busca la primera
+  // columna libre después de su racha actual (no asume ciegamente
+  // "columna en vivo + 1"), para que funcione también si ya extendió
+  // una vez y ahora quiere sumar una tercera.
+  const extenderCasilla = (agenteId) => {
+    if (columnaEnVivo === null) return;
+
+    let matriz = matrizEntrada;
+    let setMatriz = setMatrizEntrada;
+    let fila = matriz.findIndex((row) => row[columnaEnVivo] === agenteId);
+
+    if (fila === -1) {
+      matriz = matrizSalida;
+      setMatriz = setMatrizSalida;
+      fila = matriz.findIndex((row) => row[columnaEnVivo] === agenteId);
+    }
+
+    if (fila === -1) return;
+
+    let siguienteColumna = columnaEnVivo;
+    while (matriz[fila][siguienteColumna] === agenteId) siguienteColumna++;
+
+    if (siguienteColumna >= horarios.length) {
+      alert('Ya es la última hora del turno.');
+      return;
+    }
+    if (matriz[fila][siguienteColumna] !== null || agenteYaEnColumna(siguienteColumna, agenteId, null)) {
+      alert('La hora siguiente ya está ocupada.');
+      return;
+    }
+
+    const aplicar = () => {
+      const nuevaMatriz = matriz.map((row) => [...row]);
+      nuevaMatriz[fila][siguienteColumna] = agenteId;
+      setMatriz(nuevaMatriz);
+    };
+
+    if (verificarHorasConsecutivas(matriz, siguienteColumna, agenteId)) {
+      setConfirmationModal({ show: true, action: aplicar });
+    } else {
+      aplicar();
+    }
+  };
+
   const manejarDrop = (e, fila, columna) => {
     e.preventDefault();
     const { agenteId, fila: filaOrigen, columna: columnaOrigen } = JSON.parse(
@@ -536,7 +598,9 @@ const HorarioEditable = () => {
         `${a.apellido} ${a.nombre}`.toLowerCase().localeCompare(`${b.apellido} ${b.nombre}`.toLowerCase())
       );
     } else {
-      ordenados = [...ordenados].sort((a, b) => b.horas - a.horas);
+      ordenados = [...ordenados].sort(
+        (a, b) => (horasPorAgente.get(b.id) || 0) - (horasPorAgente.get(a.id) || 0)
+      );
     }
 
     return EQUIPOS.map((equipo) => ({
@@ -657,7 +721,7 @@ const HorarioEditable = () => {
                     draggable
                     onDragStart={(e) => manejarDragStart(e, agente.id)}
                   >
-                    <span className="mr-2">{agente.apellido}, {agente.nombre} ({agente.horas} h)</span>
+                    <span className="mr-2">{agente.apellido}, {agente.nombre} ({horasPorAgente.get(agente.id) || 0} h)</span>
                     <button onClick={() => eliminarAgente(agente.id)} className="text-red-200 hover:text-red-100 ml-auto">
                       <Trash2 size={16} />
                     </button>
@@ -667,16 +731,25 @@ const HorarioEditable = () => {
             </div>
           ))}
 
-          {/* Panel de Casilla: solo lectura, calculado en vivo según la
-              hora actual y la grilla. No se puede arrastrar gente acá
-              directamente — la asignación se hace desde la grilla. */}
+          {/* Panel de Casilla: calculado en vivo según la hora actual y
+              la grilla. Click para sumarle la hora siguiente al mismo
+              agente sin sacarlo primero — no es arrastrable a propósito,
+              para no confundir "sumar hora" con "cambiar de equipo" o
+              "mover de casilla". No muestra horas: mientras está en
+              función no aporta a la lectura de "cuánto lleva acumulado
+              fuera de casilla". */}
           <div className="flex-1 bg-white p-4 rounded shadow opacity-90">
             <h3 className="text-lg font-semibold mb-2">
               Casilla {columnaEnVivo !== null ? `(${horarios[columnaEnVivo]})` : '(fuera de este turno)'}
             </h3>
             <div className="flex flex-col gap-2">
               {agentesEnCasillaAhora.map((agente) => (
-                <div key={agente.id} className={`${agente.color} p-2 rounded text-white shadow`}>
+                <div
+                  key={agente.id}
+                  className={`${agente.color} p-2 rounded text-white shadow cursor-pointer`}
+                  onClick={() => extenderCasilla(agente.id)}
+                  title="Click para sumarle la hora siguiente"
+                >
                   {agente.apellido}, {agente.nombre}
                 </div>
               ))}
