@@ -107,6 +107,10 @@ const HorarioEditable = () => {
     const saved = localStorage.getItem('lastProcessedColumnIndex_v2');
     return saved !== null ? Number(saved) : 0;
   });
+  // Contador que solo sirve para forzar un refresco de pantalla cada
+  // 30s (la hora del reloj cambia aunque el estado de React no se
+  // entere solo). No participa de ninguna lógica de negocio.
+  const [tick, setTick] = useState(0);
 
   const [confirmationModal, setConfirmationModal] = useState({ show: false, action: null });
   const [selectedHorarioCasilla, setSelectedHorarioCasilla] = useState(null);
@@ -198,6 +202,7 @@ const HorarioEditable = () => {
 
   useEffect(() => {
     const revisarHora = () => {
+      setTick((t) => t + 1);
       const columnaActual = obtenerColumnaActual(horarios);
       if (columnaActual === null) return;
 
@@ -247,7 +252,8 @@ const HorarioEditable = () => {
     [selectedSector]
   );
 
-  const columnaEnVivo = useMemo(() => obtenerColumnaActual(horarios), [horarios, lastProcessedColumnIndex]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const columnaEnVivo = useMemo(() => obtenerColumnaActual(horarios), [horarios, tick]);
 
   // IDs de agentes ocupando cualquier casilla (de cualquier sector) en
   // la columna vigente ahora mismo.
@@ -308,7 +314,6 @@ const HorarioEditable = () => {
       const parsedData = Papa.parse(e.target.result, { header: false }).data;
 
       const nuevosAgentes = [];
-      let nombreCol = [];
       let nuevosHorarios = [];
       const filasMatrizPorNombre = [];
       let sectorImportado = '';
@@ -328,7 +333,6 @@ const HorarioEditable = () => {
             break;
           case 'encabezado':
             sectorImportado = fila[1];
-            nombreCol = fila.slice(2);
             break;
           case 'horario':
             nuevosHorarios = fila.slice(1);
