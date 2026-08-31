@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { BrowserRouter as Router, Route, Routes, Link } from 'react-router-dom';
-import { ArrowUpDown, BarChart2, Info, Settings, Users, LogOut } from 'lucide-react';
+import { Plus, Trash2, ArrowUpDown, BarChart2, Info, Settings, Users, LogOut } from 'lucide-react';
 import EstadisticasCasillas from './EstadisticasCasillas';
 import PasoManager from './PasoManager';
 import AgentesManager from './AgentesManager';
@@ -44,10 +44,15 @@ function registroOperativoVacio() {
 }
 
 const HorarioEditable = () => {
-  const [pasos] = useState(() => {
+  const [pasos, setPasos] = useState(() => {
     const saved = localStorage.getItem('pasos_v1');
     return saved ? JSON.parse(saved) : [];
   });
+
+  const recargarPasos = () => {
+    const saved = localStorage.getItem('pasos_v1');
+    setPasos(saved ? JSON.parse(saved) : []);
+  };
 
   const [agentesIdentidad] = useState(() => {
     const saved = localStorage.getItem('agentes_identidad_v1');
@@ -101,6 +106,8 @@ const HorarioEditable = () => {
 
   const [tick, setTick] = useState(0);
   const [confirmationModal, setConfirmationModal] = useState({ show: false, action: null });
+  const [conflictoModal, setConflictoModal] = useState({ show: false });
+  const [otrasVistasAbiertas, setOtrasVistasAbiertas] = useState(new Set());
   const [selectedHorarioCasilla, setSelectedHorarioCasilla] = useState(null);
   const [horarioTexto, setHorarioTexto] = useState('');
   const [ordenamiento, setOrdenamiento] = useState('alfabetico');
@@ -205,7 +212,15 @@ const HorarioEditable = () => {
 
   const matrizActual = useMemo(() => {
     if (!pasoActual || !vistaActual) return [];
-    return matrices[matrizKey(pasoActual.id, vistaActual.id)] || crearMatrizVacia(vistaActual.casillas.length);
+    const filasNecesarias = vistaActual.casillas.length;
+    const guardada = matrices[matrizKey(pasoActual.id, vistaActual.id)];
+    if (!guardada) return crearMatrizVacia(filasNecesarias);
+    // Si la plantilla sumó casillas después de que ya hubiera datos
+    // guardados, la matriz vieja queda corta — se completa con filas
+    // vacías en vez de romper al intentar escribir en una fila que no
+    // existía todavía.
+    if (guardada.length >= filasNecesarias) return guardada;
+    return [...guardada, ...crearMatrizVacia(filasNecesarias - guardada.length)];
   }, [matrices, pasoActual, vistaActual]);
 
   const setMatrizActual = (nuevaMatriz) => {
@@ -394,6 +409,44 @@ const HorarioEditable = () => {
   // CIERRE DE JORNADA
   // =========================================================
 
+  // =========================================================
+  // LIMPIEZA (sin generar archivo de cierre)
+  //
+  // Tres alcances separados, para elegir según la situación:
+  //   - solo la grilla (nadie pierde su turno/equipo asignado)
+  //   - solo las asignaciones (todos vuelven a "pendientes", la grilla
+  //     de casillas queda igual)
+  //   - todo (equivalente a Cerrar Jornada pero sin descargar archivo,
+  //     para cuando la jornada arrancó mal y no corresponde generar
+  //     un registro de un día que no pasó)
+  // =========================================================
+
+  const limpiarMatriz = () => {
+    if (!window.confirm('¿Vaciar toda la grilla de casillas de este paso? No borra agentes ni sus asignaciones de turno/equipo.')) return;
+    const nuevasMatrices = { ...matrices };
+    pasoActual.vistas.forEach((v) => delete nuevasMatrices[matrizKey(pasoActual.id, v.id)]);
+    setMatrices(nuevasMatrices);
+  };
+
+  const reiniciarAsignaciones = () => {
+    if (!window.confirm('¿Devolver a todos los agentes activos a "Pendientes de asignar"? La grilla de casillas no se toca.')) return;
+    const porAgente = {};
+    operativoPaso.activosHoyIds.forEach((id) => {
+      porAgente[id] = registroOperativoVacio();
+    });
+    actualizarOperativoPaso({ ...operativoPaso, porAgente });
+  };
+
+  const reiniciarTodoSinArchivo = () => {
+    if (!window.confirm('¿Reiniciar la jornada completa SIN generar archivo de cierre? Se pierde todo lo cargado hasta ahora.')) return;
+    const nuevasMatrices = { ...matrices };
+    pasoActual.vistas.forEach((v) => delete nuevasMatrices[matrizKey(pasoActual.id, v.id)]);
+    setMatrices(nuevasMatrices);
+    actualizarOperativoPaso(operativoVacio());
+    setLastProcessedHour(null);
+    localStorage.removeItem('lastProcessedHour_v3');
+  };
+
   const cerrarJornada = () => {
     if (!pasoActual) return;
     if (!window.confirm('¿Cerrar la jornada? Se descarga el archivo del día y se resetea todo lo operativo para arrancar de cero.')) return;
@@ -507,6 +560,24 @@ const HorarioEditable = () => {
     });
   };
 
+  // Ubica EXACTAMENTE dónde (qué vista, qué fila) está ya asignado un
+  // agente en una hora dada, para poder ofrecer "reasignar" en vez de
+  // solo bloquear — necesario para el préstamo entre sectores.
+  const buscarConflicto = (columnaAbsoluta, agenteId, vistaExcluida, filaExcluida) => {
+    if (!pasoActual) return null;
+    for (const vista of pasoActual.vistas) {
+      const matriz = matrices[matrizKey(pasoActual.id, vista.id)];
+      if (!matriz) continue;
+      for (let filaIdx = 0; filaIdx < matriz.length; filaIdx++) {
+        if (vista.id === vistaExcluida && filaIdx === filaExcluida) continue;
+        if (matriz[filaIdx][columnaAbsoluta] === agenteId) {
+          return { vistaId: vista.id, vistaNombre: vista.nombre, filaIdx, casillaNombre: vista.casillas[filaIdx]?.nombre };
+        }
+      }
+    }
+    return null;
+  };
+
   const verificarHorasConsecutivas = (matriz, columnaAbsoluta, agenteId) => {
     let horasConsecutivas = 1;
     let i = (columnaAbsoluta + HORAS_DIA - 1) % HORAS_DIA;
@@ -567,22 +638,23 @@ const HorarioEditable = () => {
         alert('Esa posición ya está ocupada por otro agente.');
       }
     } else {
-      if (agenteYaEnColumna(columna, agenteId, null, null)) {
-        alert('Ese agente ya está asignado en este horario.');
+      if (nuevaMatriz[fila][columna]) {
+        alert('Esa posición ya está ocupada.');
         return;
       }
-      if (!nuevaMatriz[fila][columna]) {
-        const aplicar = () => {
-          nuevaMatriz[fila][columna] = agenteId;
-          setMatrizActual(nuevaMatriz);
-        };
-        if (verificarHorasConsecutivas(nuevaMatriz, columna, agenteId)) {
-          setConfirmationModal({ show: true, action: aplicar });
-        } else {
-          aplicar();
-        }
+      const conflicto = buscarConflicto(columna, agenteId, null, null);
+      if (conflicto) {
+        setConflictoModal({ show: true, agenteId, filaDestino: fila, columnaDestino: columna, conflicto });
+        return;
+      }
+      const aplicar = () => {
+        nuevaMatriz[fila][columna] = agenteId;
+        setMatrizActual(nuevaMatriz);
+      };
+      if (verificarHorasConsecutivas(nuevaMatriz, columna, agenteId)) {
+        setConfirmationModal({ show: true, action: aplicar });
       } else {
-        alert('Esa posición ya está ocupada.');
+        aplicar();
       }
     }
   };
@@ -639,6 +711,63 @@ const HorarioEditable = () => {
       aplicar();
     }
   };
+
+  // =========================================================
+  // PRÉSTAMO ENTRE VISTAS (conflicto de doble asignación)
+  // =========================================================
+
+  const resolverConflictoCancelar = () => setConflictoModal({ show: false });
+
+  const resolverConflictoReasignar = () => {
+    const { agenteId, filaDestino, columnaDestino, conflicto } = conflictoModal;
+
+    const aplicar = () => {
+      const nuevasMatrices = { ...matrices };
+      const keyOrigen = matrizKey(pasoActual.id, conflicto.vistaId);
+      const matrizOrigen = (nuevasMatrices[keyOrigen] || []).map((row) => [...row]);
+      if (matrizOrigen[conflicto.filaIdx]) matrizOrigen[conflicto.filaIdx][columnaDestino] = null;
+      nuevasMatrices[keyOrigen] = matrizOrigen;
+
+      const keyDestino = matrizKey(pasoActual.id, vistaActual.id);
+      const matrizDestino = matrizActual.map((row) => [...row]);
+      matrizDestino[filaDestino][columnaDestino] = agenteId;
+      nuevasMatrices[keyDestino] = matrizDestino;
+
+      setMatrices(nuevasMatrices);
+    };
+
+    setConflictoModal({ show: false });
+
+    if (verificarHorasConsecutivas(matrizActual, columnaDestino, agenteId)) {
+      setConfirmationModal({ show: true, action: aplicar });
+    } else {
+      aplicar();
+    }
+  };
+
+  const toggleOtrasVistas = (equipo) => {
+    const copia = new Set(otrasVistasAbiertas);
+    if (copia.has(equipo)) copia.delete(equipo);
+    else copia.add(equipo);
+    setOtrasVistasAbiertas(copia);
+  };
+
+  // Agentes de OTRAS vistas (mismo equipo, mismo turno, libres ahora)
+  // disponibles para prestar a la vista actual. No les cambia la
+  // vistaPrincipal real — el ícono ⓘ los sigue marcando como ajenos
+  // una vez asignados, tal cual corresponde.
+  const agentesOtraVista = (equipo) => {
+    if (!pasoActual || pasoActual.vistas.length <= 1) return [];
+    return activosPresentes.filter(
+      (x) =>
+        !idsEnCasillaAhora.has(x.id) &&
+        x.registro.equipo === equipo &&
+        x.registro.turnoPrincipal === selectedTurnoId &&
+        x.registro.vistaPrincipal &&
+        x.registro.vistaPrincipal !== selectedVistaId
+    );
+  };
+
 
   // =========================================================
   // LISTAS DERIVADAS
@@ -852,7 +981,7 @@ const HorarioEditable = () => {
   return (
     <div className="p-4 bg-gray-100 min-h-screen">
       {confirmationModal.show && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+        <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">
           <div className="bg-white p-4 rounded">
             <p>¿Está seguro de que desea asignar una hora extra consecutiva a este agente?</p>
             <div className="mt-4 flex justify-end">
@@ -874,7 +1003,7 @@ const HorarioEditable = () => {
       )}
 
       {mostrarRefuerzo && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+        <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">
           <div className="bg-white p-4 rounded w-96">
             <h3 className="font-semibold mb-2">Refuerzo</h3>
             <input
@@ -902,7 +1031,7 @@ const HorarioEditable = () => {
       )}
 
       {mostrarCambio && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+        <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">
           <div className="bg-white p-4 rounded w-96">
             <h3 className="font-semibold mb-2">Cambio por planilla</h3>
             <label className="block text-sm mb-1">¿A quién reemplaza? (ya presente hoy)</label>
@@ -927,12 +1056,40 @@ const HorarioEditable = () => {
         </div>
       )}
 
+      {conflictoModal.show && (
+        <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">
+          <div className="bg-white p-4 rounded w-96">
+            <h3 className="font-semibold mb-2">Ya está asignado en otra vista</h3>
+            <p className="text-sm mb-4">
+              Este agente ya está en <strong>{conflictoModal.conflicto?.vistaNombre || 'otra vista'}</strong>
+              {' '}({conflictoModal.conflicto?.casillaNombre}) a las {etiquetaHora(conflictoModal.columnaDestino)}.
+              ¿Cancelar la asignación acá, o reasignarlo (sacarlo de ahí y traerlo a esta vista)?
+            </p>
+            <div className="flex gap-2">
+              <button onClick={resolverConflictoReasignar} className="bg-blue-500 text-white p-2 rounded flex-1">
+                Reasignar acá
+              </button>
+              <button onClick={resolverConflictoCancelar} className="bg-gray-300 p-2 rounded flex-1">
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="mb-4 flex space-x-4 items-center flex-wrap gap-2">
         <select value={pasoActual.id} onChange={(e) => setSelectedPasoId(e.target.value)} className="border p-2 font-semibold">
           {pasos.map((p) => (
             <option key={p.id} value={p.id}>{p.nombre}</option>
           ))}
         </select>
+        <button
+          onClick={recargarPasos}
+          title="Recargar plantillas desde /plantillas si las editaste en otra pestaña"
+          className="text-gray-500 hover:text-gray-700 text-sm"
+        >
+          🔄 Recargar plantilla
+        </button>
 
         <select value={selectedTurnoId || ''} onChange={(e) => setSelectedTurnoId(e.target.value)} className="border p-2">
           {pasoActual.turnos.map((t) => (
@@ -986,6 +1143,20 @@ const HorarioEditable = () => {
             <button onClick={() => setMostrarCambio(true)} className="bg-orange-600 text-white p-2 rounded shadow hover:scale-105 transition-transform">
               Cambio por planilla
             </button>
+
+            <div className="flex items-center gap-1 bg-gray-100 border border-gray-300 rounded p-1">
+              <span className="text-xs text-gray-500 px-1">Limpiar:</span>
+              <button onClick={limpiarMatriz} className="text-xs bg-white border p-1 rounded hover:bg-gray-50" title="Vacía la grilla, mantiene turno/equipo de cada agente">
+                Matriz
+              </button>
+              <button onClick={reiniciarAsignaciones} className="text-xs bg-white border p-1 rounded hover:bg-gray-50" title="Todos vuelven a Pendientes de asignar, la grilla no se toca">
+                Asignaciones
+              </button>
+              <button onClick={reiniciarTodoSinArchivo} className="text-xs bg-white border p-1 rounded hover:bg-gray-50" title="Reinicia todo sin descargar ningún archivo">
+                Todo
+              </button>
+            </div>
+
             <button onClick={cerrarJornada} className="bg-red-600 text-white p-2 rounded shadow hover:scale-105 transition-transform ml-auto">
               Cerrar Jornada
             </button>
@@ -1064,32 +1235,69 @@ const HorarioEditable = () => {
             </div>
 
             <div className="flex space-x-4 flex-wrap gap-4">
-              {ordenarAgentesPorEquipo().map(({ equipo, agentes: agentesDelEquipo }) => (
-                <div key={equipo} className="flex-1 bg-white p-4 rounded shadow min-w-[200px]">
-                  <h3 className="text-lg font-semibold mb-2">{equipo}</h3>
-                  <div className="flex flex-col gap-2">
-                    {agentesDelEquipo.map((x) => (
-                      <div
-                        key={x.id}
-                        className={`${colorPara(x.id)} p-2 rounded flex items-center text-white cursor-pointer shadow hover:scale-105 transition-transform`}
-                        draggable
-                        onDragStart={(e) => manejarDragStart(e, x.id)}
-                      >
-                        <span className="mr-2">
-                          {x.identidad.apellido}, {x.identidad.nombre} ({horasPorAgente.get(x.id) || 0} h)
-                        </span>
-                        <button
-                          onClick={() => retirarAgente(x.id)}
-                          className="text-white ml-auto"
-                          title="Retirar de la guardia"
+              {ordenarAgentesPorEquipo().map(({ equipo, agentes: agentesDelEquipo }) => {
+                const prestables = agentesOtraVista(equipo);
+                return (
+                  <div key={equipo} className="flex-1 bg-white p-4 rounded shadow min-w-[200px]">
+                    <h3 className="text-lg font-semibold mb-2">{equipo}</h3>
+                    <div className="flex flex-col gap-2">
+                      {agentesDelEquipo.map((x) => (
+                        <div
+                          key={x.id}
+                          className={`${colorPara(x.id)} p-2 rounded flex items-center text-white cursor-pointer shadow hover:scale-105 transition-transform`}
+                          draggable
+                          onDragStart={(e) => manejarDragStart(e, x.id)}
                         >
-                          <LogOut size={14} />
+                          <span className="mr-2">
+                            {x.identidad.apellido}, {x.identidad.nombre} ({horasPorAgente.get(x.id) || 0} h)
+                          </span>
+                          <button
+                            onClick={() => retirarAgente(x.id)}
+                            className="text-white ml-auto"
+                            title="Retirar de la guardia"
+                          >
+                            <LogOut size={14} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+
+                    {pasoActual.vistas.length > 1 && (
+                      <div className="mt-2 border-t pt-2">
+                        <button
+                          onClick={() => toggleOtrasVistas(equipo)}
+                          className="text-xs text-blue-600 hover:text-blue-800"
+                        >
+                          {otrasVistasAbiertas.has(equipo)
+                            ? '- Ocultar agentes de otro sector'
+                            : `+ Ver agentes de otro sector (${prestables.length})`}
                         </button>
+                        {otrasVistasAbiertas.has(equipo) && (
+                          <div className="flex flex-col gap-2 mt-2">
+                            {prestables.length === 0 && (
+                              <span className="text-xs text-gray-400">Nadie disponible en otro sector ahora.</span>
+                            )}
+                            {prestables.map((x) => (
+                              <div
+                                key={x.id}
+                                className={`${colorPara(x.id)} p-2 rounded flex items-center text-white cursor-pointer shadow opacity-80 hover:opacity-100`}
+                                draggable
+                                onDragStart={(e) => manejarDragStart(e, x.id)}
+                                title="Viene de otro sector — al asignarlo va a aparecer con el ícono de info"
+                              >
+                                <span className="mr-2">
+                                  {x.identidad.apellido}, {x.identidad.nombre} —{' '}
+                                  {pasoActual.vistas.find((v) => v.id === x.registro.vistaPrincipal)?.nombre}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
-                    ))}
+                    )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
 
               <div className="flex-1 bg-white p-4 rounded shadow opacity-90 min-w-[200px]">
                 <h3 className="text-lg font-semibold mb-2">
