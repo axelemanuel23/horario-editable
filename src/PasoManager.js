@@ -9,6 +9,7 @@ import { Plus, Trash2, ArrowLeft, Pencil } from 'lucide-react';
 // Paso {
 //   id, nombre,
 //   equipos: string[]                 // ej. ["Micro","Corredor"] o ["Micro"]
+//   guardias: string[]                 // ej. ["A","B"] — opcional, puede quedar vacío
 //   vistas: [{ id, nombre, casillas: [{ id, numero, nombre }] }]
 //   turnos: [{ id, nombre, horaInicio, horaFin }]   // horas 0-23, horaFin puede cruzar medianoche
 // }
@@ -25,6 +26,7 @@ function pasoVacio() {
     id: uuidv4(),
     nombre: '',
     equipos: ['Micro'],
+    guardias: [],
     vistas: [{ id: uuidv4(), nombre: '', casillas: [] }],
     turnos: [],
   };
@@ -47,7 +49,11 @@ const PasoManager = () => {
 
   const nuevoPaso = () => setEditando(pasoVacio());
 
-  const editarPaso = (paso) => setEditando(JSON.parse(JSON.stringify(paso)));
+  const editarPaso = (paso) => {
+    const copia = JSON.parse(JSON.stringify(paso));
+    if (!copia.guardias) copia.guardias = [];
+    setEditando(copia);
+  };
 
   const eliminarPaso = (id) => {
     if (!window.confirm('¿Eliminar esta plantilla? No se puede deshacer.')) return;
@@ -78,6 +84,13 @@ const PasoManager = () => {
   };
   const quitarEquipo = (nombre) =>
     setEditando({ ...editando, equipos: editando.equipos.filter((e) => e !== nombre) });
+
+  const agregarGuardia = (nombre) => {
+    if (!nombre.trim() || editando.guardias.includes(nombre.trim())) return;
+    setEditando({ ...editando, guardias: [...editando.guardias, nombre.trim()] });
+  };
+  const quitarGuardia = (nombre) =>
+    setEditando({ ...editando, guardias: editando.guardias.filter((g) => g !== nombre) });
 
   const agregarTurno = () =>
     setEditando({
@@ -238,6 +251,23 @@ const PasoManager = () => {
           ))}
         </div>
         <NuevoItemInput placeholder="Nombre del equipo (ej. Corredor)" onAdd={agregarEquipo} />
+      </div>
+
+      <div className="bg-white p-4 rounded shadow mb-4">
+        <label className="block text-sm font-semibold mb-1">
+          Guardias (opcional — dejar vacío si el paso no rota por guardias)
+        </label>
+        <div className="flex flex-wrap gap-2 mb-2">
+          {(editando.guardias || []).map((guardia) => (
+            <span key={guardia} className="bg-gray-200 px-3 py-1 rounded-full flex items-center gap-2">
+              {guardia}
+              <button onClick={() => quitarGuardia(guardia)} className="text-red-500 hover:text-red-700">
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+        <NuevoItemInput placeholder="Nombre de guardia (ej. A)" onAdd={agregarGuardia} />
       </div>
 
       <div className="bg-white p-4 rounded shadow mb-4">
