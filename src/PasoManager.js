@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
-import { Plus, Trash2, ArrowLeft, Pencil } from 'lucide-react';
+import { Plus, Trash2, ArrowLeft, Pencil, Download, Upload, Package } from 'lucide-react';
 
 // =========================================================
 // MODELO DE UNA PLANTILLA (PASO)
@@ -58,6 +58,60 @@ const PasoManager = () => {
   const eliminarPaso = (id) => {
     if (!window.confirm('¿Eliminar esta plantilla? No se puede deshacer.')) return;
     guardarPasos(pasos.filter((p) => p.id !== id));
+  };
+
+  const descargarJSON = (data, nombreArchivo) => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', nombreArchivo);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const exportarPaso = (paso) => {
+    descargarJSON(paso, `plantilla_${paso.nombre}.json`);
+  };
+
+  const exportarPaquete = (paso) => {
+    const saved = localStorage.getItem('agentes_identidad_v1');
+    const todosAgentes = saved ? JSON.parse(saved) : [];
+    const agentesDelPaso = todosAgentes.filter((a) => a.paso === paso.id);
+    descargarJSON({ paso, agentes: agentesDelPaso }, `paquete_${paso.nombre}.json`);
+  };
+
+  const importarPlantilla = (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = JSON.parse(e.target.result);
+        // Acepta tanto un paso suelto como un paquete completo (paso+agentes).
+        const pasoImportado = data.paso ? data.paso : data;
+        if (!pasoImportado.id || !pasoImportado.nombre) {
+          alert('El archivo no tiene el formato de una plantilla válida.');
+          return;
+        }
+        const yaExiste = pasos.some((p) => p.id === pasoImportado.id);
+        guardarPasos(yaExiste ? pasos.map((p) => (p.id === pasoImportado.id ? pasoImportado : p)) : [...pasos, pasoImportado]);
+
+        if (data.agentes) {
+          const savedAgentes = localStorage.getItem('agentes_identidad_v1');
+          const agentesActuales = savedAgentes ? JSON.parse(savedAgentes) : [];
+          const idsImportados = new Set(data.agentes.map((a) => a.id));
+          const restantes = agentesActuales.filter((a) => !idsImportados.has(a.id));
+          localStorage.setItem('agentes_identidad_v1', JSON.stringify([...restantes, ...data.agentes]));
+          alert(`Plantilla y ${data.agentes.length} agente(s) importados.`);
+        }
+      } catch (err) {
+        alert('No se pudo leer el archivo. ¿Es un JSON válido?');
+      }
+    };
+    reader.readAsText(file);
+    event.target.value = '';
   };
 
   const confirmarGuardado = () => {
@@ -182,12 +236,18 @@ const PasoManager = () => {
 
         <h1 className="text-2xl font-bold mb-4">Plantillas de pasos</h1>
 
-        <button
-          onClick={nuevoPaso}
-          className="bg-blue-500 text-white p-2 rounded flex items-center mb-4 shadow hover:scale-105 transition-transform"
-        >
-          <Plus size={20} className="mr-2" /> Nueva plantilla
-        </button>
+        <div className="flex items-center gap-2 mb-4">
+          <button
+            onClick={nuevoPaso}
+            className="bg-blue-500 text-white p-2 rounded flex items-center shadow hover:scale-105 transition-transform"
+          >
+            <Plus size={20} className="mr-2" /> Nueva plantilla
+          </button>
+          <label className="bg-gray-300 text-gray-700 p-2 rounded flex items-center cursor-pointer shadow hover:scale-105 transition-transform">
+            <Upload size={16} className="mr-2" /> Importar plantilla o paquete
+            <input type="file" accept=".json" onChange={importarPlantilla} className="hidden" />
+          </label>
+        </div>
 
         <div className="flex flex-col gap-3">
           {pasos.map((paso) => (
@@ -200,6 +260,12 @@ const PasoManager = () => {
                 </div>
               </div>
               <div className="flex gap-2">
+                <button onClick={() => exportarPaso(paso)} className="bg-gray-200 p-2 rounded hover:bg-gray-300" title="Exportar solo la plantilla">
+                  <Download size={16} />
+                </button>
+                <button onClick={() => exportarPaquete(paso)} className="bg-gray-200 p-2 rounded hover:bg-gray-300" title="Exportar plantilla + agentes en un solo archivo">
+                  <Package size={16} />
+                </button>
                 <button onClick={() => editarPaso(paso)} className="bg-gray-200 p-2 rounded hover:bg-gray-300">
                   <Pencil size={16} />
                 </button>
