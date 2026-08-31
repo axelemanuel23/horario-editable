@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { BrowserRouter as Router, Route, Routes, Link } from 'react-router-dom';
-import { Plus, Trash2, ArrowUpDown, BarChart2, Info, Settings, Users, LogOut } from 'lucide-react';
+import { ArrowUpDown, BarChart2, Info, Settings, Users, LogOut } from 'lucide-react';
 import EstadisticasCasillas from './EstadisticasCasillas';
 import PasoManager from './PasoManager';
 import AgentesManager from './AgentesManager';
