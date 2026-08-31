@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { BrowserRouter as Router, Route, Routes, Link } from 'react-router-dom';
-import { Plus, Trash2, ArrowUpDown, BarChart2, Info, Settings } from 'lucide-react';
-import { v4 as uuidv4 } from 'uuid';
-import Papa from 'papaparse';
+import { Plus, Trash2, ArrowUpDown, BarChart2, Info, Settings, Users, LogOut } from 'lucide-react';
 import EstadisticasCasillas from './EstadisticasCasillas';
 import PasoManager from './PasoManager';
+import AgentesManager from './AgentesManager';
 
 const colors = [
   'bg-red-500', 'bg-blue-500', 'bg-green-500', 'bg-yellow-500', 'bg-purple-500',
@@ -21,10 +20,6 @@ function matrizKey(pasoId, vistaId) {
   return `${pasoId}:${vistaId}`;
 }
 
-// Arma la secuencia de horas (0-23) que corresponde a un turno,
-// caminando desde horaInicio hasta horaFin (exclusive), con wraparound
-// de medianoche. Cada posición de este array es la "columna de
-// pantalla" i; el valor es la "columna absoluta" real en la matriz.
 function construirHorasTurno(horaInicio, horaFin) {
   const horas = [];
   let h = horaInicio;
@@ -40,17 +35,26 @@ function etiquetaHora(h) {
   return `${String(h).padStart(2, '0')}:00`;
 }
 
+function operativoVacio() {
+  return { activosHoyIds: [], porAgente: {}, movimientos: [] };
+}
+
+function registroOperativoVacio() {
+  return { equipo: null, vistaPrincipal: null, turnoPrincipal: null, ausente: false, retiradoHora: null };
+}
+
 const HorarioEditable = () => {
   const [pasos] = useState(() => {
     const saved = localStorage.getItem('pasos_v1');
     return saved ? JSON.parse(saved) : [];
   });
 
-  const [selectedPasoId, setSelectedPasoId] = useState(() => {
-    const saved = localStorage.getItem('selectedPasoId_v1');
-    return saved || null;
+  const [agentesIdentidad] = useState(() => {
+    const saved = localStorage.getItem('agentes_identidad_v1');
+    return saved ? JSON.parse(saved) : [];
   });
 
+  const [selectedPasoId, setSelectedPasoId] = useState(() => localStorage.getItem('selectedPasoId_v1') || null);
   const pasoActual = pasos.find((p) => p.id === selectedPasoId) || pasos[0] || null;
 
   useEffect(() => {
@@ -60,8 +64,6 @@ const HorarioEditable = () => {
   const [selectedVistaId, setSelectedVistaId] = useState(null);
   const [selectedTurnoId, setSelectedTurnoId] = useState(null);
 
-  // Cuando cambia el paso activo, reancla vista y turno seleccionados a
-  // algo válido dentro de ese paso.
   useEffect(() => {
     if (!pasoActual) return;
     setSelectedVistaId((actual) =>
@@ -76,15 +78,21 @@ const HorarioEditable = () => {
   const vistaActual = pasoActual?.vistas.find((v) => v.id === selectedVistaId) || null;
   const turnoActual = pasoActual?.turnos.find((t) => t.id === selectedTurnoId) || null;
 
-  const [agentes, setAgentes] = useState(() => {
-    const saved = localStorage.getItem('agentes_v3');
-    return saved ? JSON.parse(saved) : [];
-  });
-
   const [matrices, setMatrices] = useState(() => {
     const saved = localStorage.getItem('matrices_v3');
     return saved ? JSON.parse(saved) : {};
   });
+
+  const [estadoOperativo, setEstadoOperativo] = useState(() => {
+    const saved = localStorage.getItem('estadoOperativo_v1');
+    return saved ? JSON.parse(saved) : {};
+  });
+
+  const operativoPaso = (pasoActual && estadoOperativo[pasoActual.id]) || operativoVacio();
+
+  const actualizarOperativoPaso = (nuevoSlice) => {
+    setEstadoOperativo({ ...estadoOperativo, [pasoActual.id]: nuevoSlice });
+  };
 
   const [lastProcessedHour, setLastProcessedHour] = useState(() => {
     const saved = localStorage.getItem('lastProcessedHour_v3');
@@ -92,52 +100,35 @@ const HorarioEditable = () => {
   });
 
   const [tick, setTick] = useState(0);
-
   const [confirmationModal, setConfirmationModal] = useState({ show: false, action: null });
   const [selectedHorarioCasilla, setSelectedHorarioCasilla] = useState(null);
   const [horarioTexto, setHorarioTexto] = useState('');
-  const [nuevoNombre, setNuevoNombre] = useState('');
-  const [nuevoApellido, setNuevoApellido] = useState('');
-  const [nuevoEquipo, setNuevoEquipo] = useState('');
-  const [nuevoVistaPrincipal, setNuevoVistaPrincipal] = useState(null);
-  const [nuevoTurnoPrincipal, setNuevoTurnoPrincipal] = useState(null);
   const [ordenamiento, setOrdenamiento] = useState('alfabetico');
   const [infoCelda, setInfoCelda] = useState(null);
 
-  const [importedData, setImportedData] = useState(null);
+  const [guardiaElegida, setGuardiaElegida] = useState('');
+  const [mostrarRefuerzo, setMostrarRefuerzo] = useState(false);
+  const [filtroRefuerzo, setFiltroRefuerzo] = useState('');
+  const [mostrarCambio, setMostrarCambio] = useState(false);
+  const [cambioEntraId, setCambioEntraId] = useState('');
+  const [cambioSaleId, setCambioSaleId] = useState('');
 
-  const agentesRef = useRef(agentes);
+  const [snapshotConsulta, setSnapshotConsulta] = useState(null);
+  const [modoEdicionConsulta, setModoEdicionConsulta] = useState(false);
+  const [vistaConsultaIdx, setVistaConsultaIdx] = useState(0);
+
   const matricesRef = useRef(matrices);
-  agentesRef.current = agentes;
   matricesRef.current = matrices;
-
-  // Reancla los defaults de registro cuando cambia el paso/vista/turno
-  // activos, para que el formulario arranque en algo válido.
-  useEffect(() => {
-    if (pasoActual) setNuevoEquipo(pasoActual.equipos[0] || '');
-  }, [pasoActual]);
-  useEffect(() => {
-    setNuevoVistaPrincipal(selectedVistaId);
-  }, [selectedVistaId]);
-  useEffect(() => {
-    setNuevoTurnoPrincipal(selectedTurnoId);
-  }, [selectedTurnoId]);
-
-  useEffect(() => {
-    if (importedData) {
-      setAgentes(importedData.nuevosAgentes);
-      setMatrices(importedData.nuevasMatrices);
-      setImportedData(null);
-    }
-  }, [importedData]);
-
-  useEffect(() => {
-    localStorage.setItem('agentes_v3', JSON.stringify(agentes));
-  }, [agentes]);
+  const operativoRef = useRef(estadoOperativo);
+  operativoRef.current = estadoOperativo;
 
   useEffect(() => {
     localStorage.setItem('matrices_v3', JSON.stringify(matrices));
   }, [matrices]);
+
+  useEffect(() => {
+    localStorage.setItem('estadoOperativo_v1', JSON.stringify(estadoOperativo));
+  }, [estadoOperativo]);
 
   useEffect(() => {
     if (lastProcessedHour !== null) {
@@ -145,27 +136,18 @@ const HorarioEditable = () => {
     }
   }, [lastProcessedHour]);
 
-  const limpiarLocalStorage = () => {
-    localStorage.removeItem('agentes_v3');
-    localStorage.removeItem('matrices_v3');
-    localStorage.removeItem('lastProcessedHour_v3');
-    setAgentes([]);
-    setMatrices({});
-    setLastProcessedHour(null);
-  };
-
   // =========================================================
   // INTERCAMBIO DE EQUIPO AL HABER RELEVO EN CASILLA
   //
-  // Usa la hora ABSOLUTA real del reloj (0-23), no la posición dentro
-  // del turno que esté seleccionado en pantalla — así la lógica corre
-  // igual sin importar qué pestaña tengas abierta en ese momento.
+  // Igual que antes: usa la hora ABSOLUTA real del reloj, no la
+  // posición dentro del turno seleccionado en pantalla.
   // =========================================================
 
   function procesarTransicionHoraria(columnaAnterior, columnaNueva) {
     if (!pasoActual) return;
-    const agentesActuales = agentesRef.current;
-    const mapaEquipos = new Map(agentesActuales.map((a) => [a.id, a.equipo]));
+    const operativoActual = operativoRef.current[pasoActual.id] || operativoVacio();
+    const porAgente = { ...operativoActual.porAgente };
+    const mapaEquipos = new Map(Object.entries(porAgente).map(([id, r]) => [id, r.equipo]));
 
     pasoActual.vistas.forEach((vista) => {
       const matriz = matricesRef.current[matrizKey(pasoActual.id, vista.id)];
@@ -179,9 +161,11 @@ const HorarioEditable = () => {
       }
     });
 
-    setAgentes(
-      agentesActuales.map((a) => ({ ...a, equipo: mapaEquipos.get(a.id) ?? a.equipo }))
-    );
+    Object.keys(porAgente).forEach((id) => {
+      porAgente[id] = { ...porAgente[id], equipo: mapaEquipos.get(id) ?? porAgente[id].equipo };
+    });
+
+    actualizarOperativoPaso({ ...operativoActual, porAgente });
   }
 
   useEffect(() => {
@@ -191,16 +175,16 @@ const HorarioEditable = () => {
       const horaActual = new Date().getHours();
 
       setLastProcessedHour((prevHora) => {
-        if (prevHora === null) return horaActual; // primer chequeo: solo ancla, no procesa
+        if (prevHora === null) return horaActual;
         if (prevHora === horaActual) return prevHora;
 
         let h = prevHora;
-        let pasos = 0;
-        while (h !== horaActual && pasos < HORAS_DIA) {
+        let pasosCount = 0;
+        while (h !== horaActual && pasosCount < HORAS_DIA) {
           const siguiente = (h + 1) % HORAS_DIA;
           procesarTransicionHoraria(h, siguiente);
           h = siguiente;
-          pasos++;
+          pasosCount++;
         }
         return horaActual;
       });
@@ -216,8 +200,8 @@ const HorarioEditable = () => {
   // HELPERS
   // =========================================================
 
-  const agentePorId = (id) => agentes.find((a) => a.id === id);
-  const nombreCompleto = (agente) => `${agente.nombre} ${agente.apellido}`;
+  const identidadPorId = (id) => agentesIdentidad.find((a) => a.id === id);
+  const nombreCompleto = (identidad) => (identidad ? `${identidad.nombre} ${identidad.apellido}` : '?');
 
   const matrizActual = useMemo(() => {
     if (!pasoActual || !vistaActual) return [];
@@ -233,9 +217,6 @@ const HorarioEditable = () => {
     [turnoActual]
   );
 
-  // Índice de PANTALLA (posición dentro de horasTurno) que corresponde
-  // a la hora real ahora mismo, o null si el turno seleccionado no
-  // incluye la hora actual. Solo se usa para resaltar visualmente.
   const columnaEnVivoPantalla = useMemo(() => {
     const horaActual = new Date().getHours();
     const idx = horasTurno.indexOf(horaActual);
@@ -245,21 +226,27 @@ const HorarioEditable = () => {
 
   const horaAbsolutaActual = new Date().getHours();
 
-  const nombreCasilla = (vista, fila) => vista.casillas[fila]?.nombre ?? `Casilla ${fila + 1}`;
+  // Una hora cuenta como "a futuro" (se puede liberar/reasignar en un
+  // retiro o cambio) si su posición dentro del turno actual es igual o
+  // posterior a la posición de la hora en vivo. Si no se puede ubicar
+  // (celda de un turno distinto al que tenés en pantalla), se trata
+  // como futura por las dudas, para no dejar datos huérfanos.
+  const esHoraFutura = (h) => {
+    const posH = horasTurno.indexOf(h);
+    const posActual = horasTurno.indexOf(horaAbsolutaActual);
+    if (posH === -1 || posActual === -1) return true;
+    return posH >= posActual;
+  };
 
   const CAPITALIZAR = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
-  // Un agente es "ajeno" a lo que estás mirando si su vista principal
-  // y/o turno principal no coinciden con la vista/turno seleccionados.
-  // Si el paso tiene una sola vista, esa comparación nunca aplica (no
-  // hay nada contra qué diferir) — se cae sola, sin bandera especial.
-  const infoAjeno = (agente) => {
-    if (!pasoActual) return null;
-    const vistaAgente = pasoActual.vistas.find((v) => v.id === agente.vistaPrincipal);
-    const turnoAgente = pasoActual.turnos.find((t) => t.id === agente.turnoPrincipal);
+  const infoAjeno = (registro) => {
+    if (!pasoActual || !registro) return null;
+    const vistaAgente = pasoActual.vistas.find((v) => v.id === registro.vistaPrincipal);
+    const turnoAgente = pasoActual.turnos.find((t) => t.id === registro.turnoPrincipal);
 
-    const ajenoVista = pasoActual.vistas.length > 1 && agente.vistaPrincipal !== selectedVistaId;
-    const ajenoTurno = agente.turnoPrincipal !== selectedTurnoId;
+    const ajenoVista = pasoActual.vistas.length > 1 && registro.vistaPrincipal !== selectedVistaId;
+    const ajenoTurno = registro.turnoPrincipal !== selectedTurnoId;
     if (!ajenoVista && !ajenoTurno) return null;
 
     const partes = [];
@@ -268,8 +255,6 @@ const HorarioEditable = () => {
     return partes.length ? `Agente de ${partes.join(' — ')}` : null;
   };
 
-  // IDs de agentes ocupando cualquier casilla, de cualquier vista del
-  // paso activo, en la hora real de ahora.
   const idsEnCasillaAhora = useMemo(() => {
     if (!pasoActual) return new Set();
     const ids = new Set();
@@ -284,8 +269,6 @@ const HorarioEditable = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matrices, pasoActual, tick]);
 
-  // Horas totales asignadas a cada agente, contando TODAS las vistas
-  // del paso activo (24 columnas cada una).
   const horasPorAgente = useMemo(() => {
     if (!pasoActual) return new Map();
     const conteo = new Map();
@@ -302,189 +285,217 @@ const HorarioEditable = () => {
   }, [matrices, pasoActual]);
 
   // =========================================================
-  // EXPORTAR / IMPORTAR CSV
+  // CARGA DE GUARDIA / INICIO DE JORNADA
   // =========================================================
 
-  const exportarCSV = () => {
-    if (!pasoActual || !vistaActual || !turnoActual) return;
-
-    const filasMatrizVentana = matrizActual.map((fila) =>
-      horasTurno.map((h) => (fila[h] ? nombreCompleto(agentePorId(fila[h])) : ''))
+  const cargarGuardia = () => {
+    if (!pasoActual) return;
+    const guardias = pasoActual.guardias || [];
+    const candidatos = agentesIdentidad.filter(
+      (a) => a.paso === pasoActual.id && (guardias.length === 0 || a.guardia === guardiaElegida)
     );
-    const filasMatrizNombres = filasMatrizVentana.map((fila) => fila.map((n) => n || ''));
+    const porAgente = {};
+    candidatos.forEach((a) => {
+      porAgente[a.id] = registroOperativoVacio();
+    });
+    actualizarOperativoPaso({ activosHoyIds: candidatos.map((a) => a.id), porAgente, movimientos: [] });
+  };
 
-    const datosCSV = [
-      ['tipo', 'id', 'nombre', 'apellido', 'horas', 'equipo', 'color', 'vistaPrincipal', 'turnoPrincipal'],
-      ...agentes
-        .filter((a) => a.paso === pasoActual.id)
-        .map((a) => [
-          'agente', a.id, a.nombre, a.apellido, horasPorAgente.get(a.id) || 0, a.equipo, a.color,
-          a.vistaPrincipal, a.turnoPrincipal,
-        ]),
-      ['paso', pasoActual.id, pasoActual.nombre],
-      ['encabezado', vistaActual.nombre || '', ...vistaActual.casillas.map((c) => c.nombre)],
-      ['horario', ...horasTurno.map(etiquetaHora)],
-      ...filasMatrizNombres.map((fila, index) => ['matriz', index, ...fila]),
+  // =========================================================
+  // REFUERZO / CAMBIO POR PLANILLA / RETIRAR
+  // =========================================================
+
+  const poolDisponibleParaSumar = (filtro) => {
+    if (!pasoActual) return [];
+    const texto = filtro.trim().toLowerCase();
+    return agentesIdentidad.filter(
+      (a) =>
+        a.paso === pasoActual.id &&
+        !operativoPaso.activosHoyIds.includes(a.id) &&
+        (!texto || `${a.nombre} ${a.apellido}`.toLowerCase().includes(texto))
+    );
+  };
+
+  const confirmarRefuerzo = (agenteId) => {
+    const nuevoPorAgente = { ...operativoPaso.porAgente, [agenteId]: registroOperativoVacio() };
+    const movimientos = [
+      ...operativoPaso.movimientos,
+      { tipo: 'refuerzo', agenteId, hora: horaAbsolutaActual },
     ];
+    actualizarOperativoPaso({
+      activosHoyIds: [...operativoPaso.activosHoyIds, agenteId],
+      porAgente: nuevoPorAgente,
+      movimientos,
+    });
+    setMostrarRefuerzo(false);
+    setFiltroRefuerzo('');
+  };
 
-    const csvContent = Papa.unparse(datosCSV);
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const confirmarCambio = () => {
+    if (!cambioEntraId || !cambioSaleId) return;
+    const registroSale = operativoPaso.porAgente[cambioSaleId] || registroOperativoVacio();
+
+    const nuevoPorAgente = {
+      ...operativoPaso.porAgente,
+      [cambioSaleId]: { ...registroSale, ausente: true },
+      [cambioEntraId]: { ...registroSale, ausente: false, retiradoHora: null },
+    };
+
+    const nuevasMatrices = { ...matrices };
+    pasoActual.vistas.forEach((vista) => {
+      const key = matrizKey(pasoActual.id, vista.id);
+      const matriz = nuevasMatrices[key];
+      if (!matriz) return;
+      nuevasMatrices[key] = matriz.map((fila) =>
+        fila.map((celda, h) => (celda === cambioSaleId && esHoraFutura(h) ? cambioEntraId : celda))
+      );
+    });
+    setMatrices(nuevasMatrices);
+
+    const movimientos = [
+      ...operativoPaso.movimientos,
+      { tipo: 'cambio', entra: cambioEntraId, sale: cambioSaleId, hora: horaAbsolutaActual },
+    ];
+    actualizarOperativoPaso({
+      activosHoyIds: [...operativoPaso.activosHoyIds, cambioEntraId],
+      porAgente: nuevoPorAgente,
+      movimientos,
+    });
+
+    setMostrarCambio(false);
+    setCambioEntraId('');
+    setCambioSaleId('');
+  };
+
+  const retirarAgente = (agenteId) => {
+    if (!window.confirm('¿Confirmar que este agente se retira de la guardia ahora?')) return;
+
+    const nuevasMatrices = { ...matrices };
+    pasoActual.vistas.forEach((vista) => {
+      const key = matrizKey(pasoActual.id, vista.id);
+      const matriz = nuevasMatrices[key];
+      if (!matriz) return;
+      nuevasMatrices[key] = matriz.map((fila) =>
+        fila.map((celda, h) => (celda === agenteId && esHoraFutura(h) ? null : celda))
+      );
+    });
+    setMatrices(nuevasMatrices);
+
+    const registro = operativoPaso.porAgente[agenteId] || registroOperativoVacio();
+    const movimientos = [...operativoPaso.movimientos, { tipo: 'retiro', agenteId, hora: horaAbsolutaActual }];
+    actualizarOperativoPaso({
+      ...operativoPaso,
+      porAgente: { ...operativoPaso.porAgente, [agenteId]: { ...registro, retiradoHora: horaAbsolutaActual } },
+      movimientos,
+    });
+  };
+
+  // =========================================================
+  // CIERRE DE JORNADA
+  // =========================================================
+
+  const cerrarJornada = () => {
+    if (!pasoActual) return;
+    if (!window.confirm('¿Cerrar la jornada? Se descarga el archivo del día y se resetea todo lo operativo para arrancar de cero.')) return;
+
+    const snapshot = {
+      pasoId: pasoActual.id,
+      pasoNombre: pasoActual.nombre,
+      fecha: new Date().toISOString(),
+      vistas: pasoActual.vistas.map((v) => ({
+        nombre: v.nombre,
+        casillas: v.casillas.map((c) => c.nombre),
+        matriz: matrices[matrizKey(pasoActual.id, v.id)] || crearMatrizVacia(v.casillas.length),
+      })),
+      turnos: pasoActual.turnos,
+      agentes: operativoPaso.activosHoyIds.map((id) => {
+        const identidad = identidadPorId(id);
+        const registro = operativoPaso.porAgente[id] || registroOperativoVacio();
+        const vistaNombre = pasoActual.vistas.find((v) => v.id === registro.vistaPrincipal)?.nombre || null;
+        const turnoNombre = pasoActual.turnos.find((t) => t.id === registro.turnoPrincipal)?.nombre || null;
+        return {
+          id,
+          nombre: identidad?.nombre || '?',
+          apellido: identidad?.apellido || '',
+          guardia: identidad?.guardia || '',
+          equipo: registro.equipo,
+          vistaPrincipal: vistaNombre,
+          turnoPrincipal: turnoNombre,
+          ausente: registro.ausente,
+          retiradoHora: registro.retiradoHora,
+          horasTrabajadas: horasPorAgente.get(id) || 0,
+        };
+      }),
+      movimientos: operativoPaso.movimientos.map((m) => ({
+        ...m,
+        agenteNombre: m.agenteId ? nombreCompleto(identidadPorId(m.agenteId)) : undefined,
+        entraNombre: m.entra ? nombreCompleto(identidadPorId(m.entra)) : undefined,
+        saleNombre: m.sale ? nombreCompleto(identidadPorId(m.sale)) : undefined,
+      })),
+    };
+
+    const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
     const fecha = new Date();
     fecha.setHours(fecha.getHours() - 3);
     const fechaActual = fecha.toISOString().slice(0, 19).replace(/:/g, '-');
-    link.setAttribute('download', `${pasoActual.nombre}_${vistaActual.nombre || 'unica'}_${turnoActual.nombre}_${fechaActual}.csv`);
+    link.setAttribute('download', `cierre_${pasoActual.nombre}_${fechaActual}.json`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    const nuevasMatrices = { ...matrices };
+    pasoActual.vistas.forEach((v) => delete nuevasMatrices[matrizKey(pasoActual.id, v.id)]);
+    setMatrices(nuevasMatrices);
+    actualizarOperativoPaso(operativoVacio());
+    setLastProcessedHour(null);
+    localStorage.removeItem('lastProcessedHour_v3');
+  };
+
+  const importarCierre = (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = JSON.parse(e.target.result);
+        setSnapshotConsulta(data);
+        setModoEdicionConsulta(false);
+        setVistaConsultaIdx(0);
+      } catch (err) {
+        alert('No se pudo leer el archivo. ¿Es un cierre de jornada válido (.json)?');
+      }
+    };
+    reader.readAsText(file);
+    event.target.value = '';
+  };
+
+  const limpiarCeldaConsulta = (vistaIdx, filaIdx, columna) => {
+    if (!modoEdicionConsulta) return;
+    setSnapshotConsulta((prev) => {
+      const copia = JSON.parse(JSON.stringify(prev));
+      copia.vistas[vistaIdx].matriz[filaIdx][columna] = null;
+      return copia;
+    });
+  };
+
+  const descargarConsultaCorregida = () => {
+    const blob = new Blob([JSON.stringify(snapshotConsulta, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `cierre_corregido_${Date.now()}.json`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   };
 
-  const importarCSV = (event) => {
-    const file = event.target.files[0];
-    if (!file || !pasoActual || !vistaActual) return;
+  // =========================================================
+  // ASIGNACIÓN (DRAG & DROP EN LA GRILLA)
+  // =========================================================
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const parsedData = Papa.parse(e.target.result, { header: false }).data;
-
-      const nuevosAgentesImportados = [];
-      let horariosImportados = [];
-      const filasMatrizPorNombre = [];
-
-      parsedData.forEach((fila) => {
-        switch (fila[0]) {
-          case 'agente':
-            nuevosAgentesImportados.push({
-              id: fila[1],
-              nombre: fila[2],
-              apellido: fila[3],
-              horas: parseInt(fila[4], 10),
-              equipo: fila[5],
-              color: fila[6],
-              vistaPrincipal: fila[7],
-              turnoPrincipal: fila[8],
-              paso: pasoActual.id,
-            });
-            break;
-          case 'horario':
-            horariosImportados = fila.slice(1);
-            break;
-          case 'matriz':
-            filasMatrizPorNombre.push(fila.slice(2));
-            break;
-          default:
-            break;
-        }
-      });
-
-      const idPorNombre = new Map(
-        nuevosAgentesImportados.map((a) => [`${a.nombre} ${a.apellido}`, a.id])
-      );
-
-      const horasAbsolutasImportadas = horariosImportados.map((h) => parseInt(h.split(':')[0], 10));
-
-      const matrizNueva = crearMatrizVacia(vistaActual.casillas.length);
-      filasMatrizPorNombre.forEach((fila, filaIdx) => {
-        if (filaIdx >= matrizNueva.length) return;
-        fila.forEach((nombre, i) => {
-          const horaAbs = horasAbsolutasImportadas[i];
-          if (nombre && horaAbs !== undefined) {
-            matrizNueva[filaIdx][horaAbs] = idPorNombre.get(nombre) ?? null;
-          }
-        });
-      });
-
-      const agentesRestantes = agentes.filter((a) => a.paso !== pasoActual.id);
-
-      setImportedData({
-        nuevosAgentes: [...agentesRestantes, ...nuevosAgentesImportados],
-        nuevasMatrices: { ...matrices, [matrizKey(pasoActual.id, vistaActual.id)]: matrizNueva },
-      });
-    };
-
-    reader.readAsText(file);
-  };
-
-  const generarTextoHorario = () => {
-    if (selectedHorarioCasilla === null || !pasoActual) return;
-    let texto = '';
-    if (selectedHorarioCasilla === -1) {
-      texto += `-- Equipos --\n`;
-      pasoActual.equipos.forEach((equipo) => {
-        texto += `${equipo}:\n`;
-        agentesDelPaso
-          .filter((a) => a.equipo === equipo && !idsEnCasillaAhora.has(a.id))
-          .forEach((a) => {
-            texto += ` - ${a.nombre} ${a.apellido}\n`;
-          });
-      });
-      texto += `Casilla:\n`;
-      agentesDelPaso
-        .filter((a) => idsEnCasillaAhora.has(a.id))
-        .forEach((a) => {
-          texto += ` - ${a.nombre} ${a.apellido}\n`;
-        });
-    } else {
-      const horaAbs = horasTurno[selectedHorarioCasilla];
-      texto += `Horario: ${etiquetaHora(horaAbs)}\n`;
-      matrizActual.forEach((fila, indexFila) => {
-        if (fila[horaAbs]) {
-          const agente = agentePorId(fila[horaAbs]);
-          texto += `${nombreCasilla(vistaActual, indexFila)}: ${agente ? nombreCompleto(agente) : '?'}\n`;
-        }
-      });
-    }
-    setHorarioTexto(texto.trim());
-  };
-
-  const eliminarTextoHorario = () => setHorarioTexto('');
-
-  const agentesDelPaso = pasoActual ? agentes.filter((a) => a.paso === pasoActual.id) : [];
-
-  const agregarAgente = () => {
-    if (!pasoActual || nuevoNombre.trim() === '' || nuevoApellido.trim() === '') return;
-    const color = colors[agentesDelPaso.length % colors.length];
-    const nuevoAgente = {
-      id: uuidv4(),
-      nombre: nuevoNombre,
-      apellido: nuevoApellido,
-      color,
-      paso: pasoActual.id,
-      equipo: nuevoEquipo,
-      vistaPrincipal: nuevoVistaPrincipal,
-      turnoPrincipal: nuevoTurnoPrincipal,
-    };
-    setAgentes([...agentes, nuevoAgente]);
-    setNuevoNombre('');
-    setNuevoApellido('');
-  };
-
-  const eliminarAgente = (id) => {
-    setAgentes(agentes.filter((a) => a.id !== id));
-    const nuevasMatrices = { ...matrices };
-    Object.keys(nuevasMatrices).forEach((key) => {
-      nuevasMatrices[key] = nuevasMatrices[key].map((fila) => fila.map((c) => (c === id ? null : c)));
-    });
-    setMatrices(nuevasMatrices);
-  };
-
-  const manejarDragStart = (e, agenteId, fila, columna) => {
-    e.dataTransfer.setData('text/plain', JSON.stringify({ agenteId, fila, columna }));
-  };
-
-  const manejarDragOver = (e) => e.preventDefault();
-
-  const manejarDropEquipo = (e, nuevoEquipoDestino) => {
-    e.preventDefault();
-    const { agenteId } = JSON.parse(e.dataTransfer.getData('text'));
-    setAgentes(agentes.map((a) => (a.id === agenteId ? { ...a, equipo: nuevoEquipoDestino } : a)));
-  };
-
-  // Un agente ocupa como mucho una casilla a la vez en una hora dada:
-  // se chequean TODAS las vistas del paso, no solo la que está en
-  // pantalla.
   const agenteYaEnColumna = (columnaAbsoluta, agenteId, vistaExcluida, filaExcluida) => {
     if (!pasoActual) return false;
     return pasoActual.vistas.some((vista) => {
@@ -496,36 +507,38 @@ const HorarioEditable = () => {
     });
   };
 
-  // Circular (módulo 24) para que el cruce de medianoche cuente como
-  // adyacente — necesario para los turnos que cruzan las 00:00.
   const verificarHorasConsecutivas = (matriz, columnaAbsoluta, agenteId) => {
     let horasConsecutivas = 1;
     let i = (columnaAbsoluta + HORAS_DIA - 1) % HORAS_DIA;
-    let pasos = 0;
-    while (pasos < HORAS_DIA - 1) {
+    let pasosCount = 0;
+    while (pasosCount < HORAS_DIA - 1) {
       const columnaChequeada = i;
       if (!matriz.some((row) => row[columnaChequeada] === agenteId)) break;
       horasConsecutivas++;
       i = (i + HORAS_DIA - 1) % HORAS_DIA;
-      pasos++;
+      pasosCount++;
     }
     i = (columnaAbsoluta + 1) % HORAS_DIA;
-    pasos = 0;
-    while (pasos < HORAS_DIA - 1) {
+    pasosCount = 0;
+    while (pasosCount < HORAS_DIA - 1) {
       const columnaChequeada = i;
       if (!matriz.some((row) => row[columnaChequeada] === agenteId)) break;
       horasConsecutivas++;
       i = (i + 1) % HORAS_DIA;
-      pasos++;
+      pasosCount++;
     }
     return horasConsecutivas >= 3;
   };
 
+  const manejarDragStart = (e, agenteId, fila, columna) => {
+    e.dataTransfer.setData('text/plain', JSON.stringify({ agenteId, fila, columna }));
+  };
+
+  const manejarDragOver = (e) => e.preventDefault();
+
   const manejarDrop = (e, fila, columnaPantalla) => {
     e.preventDefault();
-    const { agenteId, fila: filaOrigen, columna: columnaOrigenPantalla } = JSON.parse(
-      e.dataTransfer.getData('text')
-    );
+    const { agenteId, fila: filaOrigen, columna: columnaOrigenPantalla } = JSON.parse(e.dataTransfer.getData('text'));
     const columna = horasTurno[columnaPantalla];
     const nuevaMatriz = matrizActual.map((row) => [...row]);
 
@@ -583,12 +596,8 @@ const HorarioEditable = () => {
     }
   };
 
-  // Click en el chip de Casilla: suma la hora siguiente al agente en
-  // función, buscando en TODAS las vistas del paso. Circular (módulo
-  // 24) para que funcione también cruzando medianoche.
   const extenderCasilla = (agenteId) => {
     if (!pasoActual) return;
-
     let vistaEncontrada = null;
     let matrizEncontrada = null;
     let filaEncontrada = -1;
@@ -604,7 +613,6 @@ const HorarioEditable = () => {
         break;
       }
     }
-
     if (!vistaEncontrada) return;
 
     let siguiente = horaAbsolutaActual;
@@ -632,32 +640,102 @@ const HorarioEditable = () => {
     }
   };
 
+  // =========================================================
+  // LISTAS DERIVADAS
+  // =========================================================
+
+  const activosInfo = operativoPaso.activosHoyIds
+    .map((id) => ({ id, identidad: identidadPorId(id), registro: operativoPaso.porAgente[id] || registroOperativoVacio() }))
+    .filter((x) => x.identidad);
+
+  const activosPresentes = activosInfo.filter((x) => !x.registro.ausente && !x.registro.retiradoHora);
+
+  const pendientes = activosPresentes.filter(
+    (x) =>
+      !x.registro.turnoPrincipal ||
+      !x.registro.equipo ||
+      (pasoActual && pasoActual.vistas.length > 1 && !x.registro.vistaPrincipal)
+  );
+
+  const sinTurno = activosPresentes.filter((x) => !x.registro.turnoPrincipal).length;
+  const sinEquipo = activosPresentes.filter((x) => x.registro.turnoPrincipal && !x.registro.equipo).length;
+  const sinVista =
+    pasoActual && pasoActual.vistas.length > 1
+      ? activosPresentes.filter((x) => x.registro.equipo && !x.registro.vistaPrincipal).length
+      : 0;
+
+  const asignarCampoAgente = (agenteId, campo, valor) => {
+    const registro = operativoPaso.porAgente[agenteId] || registroOperativoVacio();
+    actualizarOperativoPaso({
+      ...operativoPaso,
+      porAgente: { ...operativoPaso.porAgente, [agenteId]: { ...registro, [campo]: valor } },
+    });
+  };
+
   const ordenarAgentesPorEquipo = () => {
     if (!pasoActual) return [];
-    let ordenados = agentesDelPaso.filter(
-      (a) =>
-        !idsEnCasillaAhora.has(a.id) &&
-        (pasoActual.vistas.length <= 1 || a.vistaPrincipal === selectedVistaId) &&
-        a.turnoPrincipal === selectedTurnoId
+    let listado = activosPresentes.filter(
+      (x) =>
+        !idsEnCasillaAhora.has(x.id) &&
+        x.registro.turnoPrincipal &&
+        x.registro.equipo &&
+        (pasoActual.vistas.length <= 1 || x.registro.vistaPrincipal) &&
+        (pasoActual.vistas.length <= 1 || x.registro.vistaPrincipal === selectedVistaId) &&
+        x.registro.turnoPrincipal === selectedTurnoId
     );
 
     if (ordenamiento === 'alfabetico') {
-      ordenados = [...ordenados].sort((a, b) =>
-        `${a.apellido} ${a.nombre}`.toLowerCase().localeCompare(`${b.apellido} ${b.nombre}`.toLowerCase())
+      listado = [...listado].sort((a, b) =>
+        `${a.identidad.apellido} ${a.identidad.nombre}`
+          .toLowerCase()
+          .localeCompare(`${b.identidad.apellido} ${b.identidad.nombre}`.toLowerCase())
       );
     } else {
-      ordenados = [...ordenados].sort(
-        (a, b) => (horasPorAgente.get(b.id) || 0) - (horasPorAgente.get(a.id) || 0)
-      );
+      listado = [...listado].sort((a, b) => (horasPorAgente.get(b.id) || 0) - (horasPorAgente.get(a.id) || 0));
     }
 
     return pasoActual.equipos.map((equipo) => ({
       equipo,
-      agentes: ordenados.filter((a) => a.equipo === equipo),
+      agentes: listado.filter((x) => x.registro.equipo === equipo),
     }));
   };
 
-  const agentesEnCasillaAhora = agentesDelPaso.filter((a) => idsEnCasillaAhora.has(a.id));
+  const agentesEnCasillaAhora = activosInfo.filter((x) => idsEnCasillaAhora.has(x.id));
+
+  const colorPara = (id) => colors[Math.abs(hashCode(id)) % colors.length];
+  function hashCode(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) hash = (hash << 5) - hash + str.charCodeAt(i);
+    return hash;
+  }
+
+  const generarTextoHorario = () => {
+    if (selectedHorarioCasilla === null || !pasoActual) return;
+    let texto = '';
+    if (selectedHorarioCasilla === -1) {
+      texto += `-- Equipos --\n`;
+      ordenarAgentesPorEquipo().forEach(({ equipo, agentes: lista }) => {
+        texto += `${equipo}:\n`;
+        lista.forEach((x) => {
+          texto += ` - ${x.identidad.nombre} ${x.identidad.apellido}\n`;
+        });
+      });
+      texto += `Casilla:\n`;
+      agentesEnCasillaAhora.forEach((x) => {
+        texto += ` - ${x.identidad.nombre} ${x.identidad.apellido}\n`;
+      });
+    } else {
+      const horaAbs = horasTurno[selectedHorarioCasilla];
+      texto += `Horario: ${etiquetaHora(horaAbs)}\n`;
+      matrizActual.forEach((fila, indexFila) => {
+        if (fila[horaAbs]) {
+          const identidad = identidadPorId(fila[horaAbs]);
+          texto += `${vistaActual.casillas[indexFila]?.nombre}: ${nombreCompleto(identidad)}\n`;
+        }
+      });
+    }
+    setHorarioTexto(texto.trim());
+  };
 
   // =========================================================
   // RENDER
@@ -679,6 +757,98 @@ const HorarioEditable = () => {
     return <div className="p-4">Cargando…</div>;
   }
 
+  // ---- MODO CONSULTA (cierre importado) ----
+  if (snapshotConsulta) {
+    const vistaSnap = snapshotConsulta.vistas[vistaConsultaIdx];
+    const agentePorIdSnap = (id) => snapshotConsulta.agentes.find((a) => a.id === id);
+    return (
+      <div className="p-4 bg-gray-100 min-h-screen">
+        <div className="flex items-center justify-between mb-4">
+          <h1 className="text-2xl font-bold">
+            Consulta: {snapshotConsulta.pasoNombre} — {new Date(snapshotConsulta.fecha).toLocaleString()}
+          </h1>
+          <button
+            onClick={() => setSnapshotConsulta(null)}
+            className="bg-gray-300 p-2 rounded"
+          >
+            Volver a jornada en vivo
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2 mb-4 flex-wrap">
+          {snapshotConsulta.vistas.length > 1 && (
+            <select value={vistaConsultaIdx} onChange={(e) => setVistaConsultaIdx(Number(e.target.value))} className="border p-2">
+              {snapshotConsulta.vistas.map((v, idx) => (
+                <option key={idx} value={idx}>{v.nombre || `Vista ${idx + 1}`}</option>
+              ))}
+            </select>
+          )}
+          <button
+            onClick={() => setModoEdicionConsulta(!modoEdicionConsulta)}
+            className={`p-2 rounded ${modoEdicionConsulta ? 'bg-yellow-500 text-white' : 'bg-gray-300'}`}
+          >
+            {modoEdicionConsulta ? 'Bloquear edición' : 'Habilitar edición'}
+          </button>
+          {modoEdicionConsulta && (
+            <button onClick={descargarConsultaCorregida} className="bg-green-500 text-white p-2 rounded">
+              Descargar corregido
+            </button>
+          )}
+        </div>
+
+        <div className="bg-white p-4 rounded shadow mb-4">
+          <h2 className="font-semibold mb-2">Movimientos del día</h2>
+          {snapshotConsulta.movimientos.length === 0 && <p className="text-gray-400 text-sm">Sin movimientos registrados.</p>}
+          <ul className="text-sm">
+            {snapshotConsulta.movimientos.map((m, idx) => (
+              <li key={idx}>
+                {m.tipo === 'cambio' && `${m.entraNombre} → ${m.saleNombre} (${m.entraNombre} vino por ${m.saleNombre}) — ${etiquetaHora(m.hora)}`}
+                {m.tipo === 'refuerzo' && `${m.agenteNombre} — refuerzo — ${etiquetaHora(m.hora)}`}
+                {m.tipo === 'retiro' && `${m.agenteNombre} — se retiró — ${etiquetaHora(m.hora)}`}
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full bg-white shadow-md rounded">
+            <thead>
+              <tr>
+                <th className="border p-2 w-32">{vistaSnap.nombre || 'Casillas'}</th>
+                {Array.from({ length: 24 }, (_, h) => (
+                  <th key={h} className="border p-2">{etiquetaHora(h)}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {vistaSnap.casillas.map((nombreCasilla, filaIdx) => (
+                <tr key={filaIdx}>
+                  <td className="border p-2 font-bold">{nombreCasilla}</td>
+                  {vistaSnap.matriz[filaIdx].map((celda, h) => {
+                    const agenteSnap = celda ? agentePorIdSnap(celda) : null;
+                    return (
+                      <td
+                        key={h}
+                        className="border p-2 w-20 h-10"
+                        onClick={() => limpiarCeldaConsulta(vistaConsultaIdx, filaIdx, h)}
+                      >
+                        {agenteSnap && (
+                          <div className={`${colorPara(celda)} text-white text-xs rounded p-1 text-center`}>
+                            {agenteSnap.apellido}
+                          </div>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="p-4 bg-gray-100 min-h-screen">
       {confirmationModal.show && (
@@ -695,10 +865,7 @@ const HorarioEditable = () => {
               >
                 Confirmar
               </button>
-              <button
-                onClick={() => setConfirmationModal({ show: false, action: null })}
-                className="bg-red-500 text-white p-2 rounded"
-              >
+              <button onClick={() => setConfirmationModal({ show: false, action: null })} className="bg-red-500 text-white p-2 rounded">
                 Cancelar
               </button>
             </div>
@@ -706,12 +873,62 @@ const HorarioEditable = () => {
         </div>
       )}
 
+      {mostrarRefuerzo && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+          <div className="bg-white p-4 rounded w-96">
+            <h3 className="font-semibold mb-2">Refuerzo</h3>
+            <input
+              value={filtroRefuerzo}
+              onChange={(e) => setFiltroRefuerzo(e.target.value)}
+              className="border p-2 w-full mb-2"
+              placeholder="Buscar agente..."
+            />
+            <div className="max-h-60 overflow-y-auto">
+              {poolDisponibleParaSumar(filtroRefuerzo).map((a) => (
+                <div
+                  key={a.id}
+                  onClick={() => confirmarRefuerzo(a.id)}
+                  className="p-2 hover:bg-gray-100 cursor-pointer rounded"
+                >
+                  {a.apellido}, {a.nombre} {a.guardia && `(Guardia ${a.guardia})`}
+                </div>
+              ))}
+            </div>
+            <button onClick={() => setMostrarRefuerzo(false)} className="bg-gray-300 p-2 rounded mt-2 w-full">
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {mostrarCambio && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+          <div className="bg-white p-4 rounded w-96">
+            <h3 className="font-semibold mb-2">Cambio por planilla</h3>
+            <label className="block text-sm mb-1">¿A quién reemplaza? (ya presente hoy)</label>
+            <select value={cambioSaleId} onChange={(e) => setCambioSaleId(e.target.value)} className="border p-2 w-full mb-2">
+              <option value="">Elegir...</option>
+              {activosPresentes.map((x) => (
+                <option key={x.id} value={x.id}>{x.identidad.apellido}, {x.identidad.nombre}</option>
+              ))}
+            </select>
+            <label className="block text-sm mb-1">¿Quién entra?</label>
+            <select value={cambioEntraId} onChange={(e) => setCambioEntraId(e.target.value)} className="border p-2 w-full mb-2">
+              <option value="">Elegir...</option>
+              {poolDisponibleParaSumar('').map((a) => (
+                <option key={a.id} value={a.id}>{a.apellido}, {a.nombre} {a.guardia && `(Guardia ${a.guardia})`}</option>
+              ))}
+            </select>
+            <div className="flex gap-2">
+              <button onClick={confirmarCambio} className="bg-blue-500 text-white p-2 rounded flex-1">Confirmar</button>
+              <button onClick={() => setMostrarCambio(false)} className="bg-gray-300 p-2 rounded flex-1">Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="mb-4 flex space-x-4 items-center flex-wrap gap-2">
-        <select
-          value={pasoActual.id}
-          onChange={(e) => setSelectedPasoId(e.target.value)}
-          className="border p-2 font-semibold"
-        >
+        <select value={pasoActual.id} onChange={(e) => setSelectedPasoId(e.target.value)} className="border p-2 font-semibold">
           {pasos.map((p) => (
             <option key={p.id} value={p.id}>{p.nombre}</option>
           ))}
@@ -731,247 +948,298 @@ const HorarioEditable = () => {
           </select>
         )}
 
+        <Link to="/agentes" className="text-gray-500 hover:text-gray-700 flex items-center text-sm">
+          <Users size={16} className="mr-1" /> Agentes
+        </Link>
         <Link to="/plantillas" className="text-gray-500 hover:text-gray-700 flex items-center text-sm">
           <Settings size={16} className="mr-1" /> Plantillas
         </Link>
       </div>
 
-      <div className="mb-4">
-        <h2 className="text-xl font-bold mb-2">Registrar Agentes</h2>
-        <div className="flex items-center mb-2 flex-wrap gap-2">
-          <input
-            type="text"
-            value={nuevoNombre}
-            onChange={(e) => setNuevoNombre(e.target.value)}
-            className="border p-2"
-            placeholder="Nombre"
-          />
-          <input
-            type="text"
-            value={nuevoApellido}
-            onChange={(e) => setNuevoApellido(e.target.value)}
-            className="border p-2"
-            placeholder="Apellido"
-          />
-          <select value={nuevoEquipo} onChange={(e) => setNuevoEquipo(e.target.value)} className="border p-2">
-            {pasoActual.equipos.map((equipo) => (
-              <option key={equipo} value={equipo}>{equipo}</option>
-            ))}
-          </select>
-          {pasoActual.vistas.length > 1 && (
-            <select
-              value={nuevoVistaPrincipal || ''}
-              onChange={(e) => setNuevoVistaPrincipal(e.target.value)}
-              className="border p-2"
-              title="Vista principal"
-            >
-              {pasoActual.vistas.map((v) => (
-                <option key={v.id} value={v.id}>{v.nombre}</option>
-              ))}
-            </select>
-          )}
-          <select
-            value={nuevoTurnoPrincipal || ''}
-            onChange={(e) => setNuevoTurnoPrincipal(e.target.value)}
-            className="border p-2"
-            title="Turno principal"
-          >
-            {pasoActual.turnos.map((t) => (
-              <option key={t.id} value={t.id}>{t.nombre}</option>
-            ))}
-          </select>
-          <button onClick={agregarAgente} className="bg-blue-500 text-white p-2 rounded">
-            <Plus size={20} />
-          </button>
-        </div>
-
-        <div className="mt-4 mb-4 flex items-center gap-2">
-          <button onClick={exportarCSV} className="bg-green-500 text-white p-2 rounded shadow hover:scale-105 transition-transform">
-            Exportar a CSV
-          </button>
-          <input type="file" accept=".csv" onChange={importarCSV} className="p-2 border" />
-          <Link to="/estadisticas" className="bg-purple-500 text-white p-2 rounded flex items-center shadow hover:scale-105 transition-transform">
-            <BarChart2 size={20} className="mr-2" /> Ver Estadísticas
-          </Link>
-        </div>
-
-        <div className="flex items-center mb-2">
-          <button
-            onClick={() => setOrdenamiento(ordenamiento === 'alfabetico' ? 'horas' : 'alfabetico')}
-            className="bg-gray-300 text-gray-700 p-2 rounded flex items-center shadow hover:scale-105 transition-transform"
-          >
-            <ArrowUpDown size={20} className="mr-2" />
-            {ordenamiento === 'alfabetico' ? 'Ordenado alfabeticamente' : 'Ordenado por carga horaria'}
-          </button>
-        </div>
-
-        <div className="flex space-x-4 flex-wrap gap-4">
-          {ordenarAgentesPorEquipo().map(({ equipo, agentes: agentesDelEquipo }) => (
-            <div
-              key={equipo}
-              className="flex-1 bg-white p-4 rounded shadow min-w-[200px]"
-              onDragOver={manejarDragOver}
-              onDrop={(e) => manejarDropEquipo(e, equipo)}
-            >
-              <h3 className="text-lg font-semibold mb-2">{equipo}</h3>
-              <div className="flex flex-col gap-2">
-                {agentesDelEquipo.map((agente) => (
-                  <div
-                    key={agente.id}
-                    className={`${agente.color} p-2 rounded flex items-center text-white cursor-pointer shadow hover:scale-105 transition-transform`}
-                    draggable
-                    onDragStart={(e) => manejarDragStart(e, agente.id)}
-                  >
-                    <span className="mr-2">{agente.apellido}, {agente.nombre} ({horasPorAgente.get(agente.id) || 0} h)</span>
-                    <button onClick={() => eliminarAgente(agente.id)} className="text-red-200 hover:text-red-100 ml-auto">
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
+      {operativoPaso.activosHoyIds.length === 0 ? (
+        <div className="bg-white p-4 rounded shadow mb-4">
+          <h2 className="font-semibold mb-2">Iniciar jornada</h2>
+          {(pasoActual.guardias || []).length > 0 ? (
+            <div className="flex items-center gap-2">
+              <select value={guardiaElegida} onChange={(e) => setGuardiaElegida(e.target.value)} className="border p-2">
+                <option value="">Elegir guardia...</option>
+                {pasoActual.guardias.map((g) => (
+                  <option key={g} value={g}>{g}</option>
                 ))}
-              </div>
+              </select>
+              <button onClick={cargarGuardia} disabled={!guardiaElegida} className="bg-blue-500 text-white p-2 rounded disabled:opacity-50">
+                Cargar guardia
+              </button>
             </div>
-          ))}
-
-          <div className="flex-1 bg-white p-4 rounded shadow opacity-90 min-w-[200px]">
-            <h3 className="text-lg font-semibold mb-2">
-              Casilla {columnaEnVivoPantalla !== null ? `(${etiquetaHora(horaAbsolutaActual)})` : '(fuera de este turno)'}
-            </h3>
-            <div className="flex flex-col gap-2">
-              {agentesEnCasillaAhora.map((agente) => {
-                const textoAjeno = infoAjeno(agente);
-                const chipKey = `casilla-${agente.id}`;
-                return (
-                  <div
-                    key={agente.id}
-                    className={`relative ${agente.color} p-2 rounded text-white shadow cursor-pointer`}
-                    onClick={() => extenderCasilla(agente.id)}
-                    title="Click para sumarle la hora siguiente"
-                  >
-                    {agente.apellido}, {agente.nombre} ({horasPorAgente.get(agente.id) || 0} h)
-                    {textoAjeno && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setInfoCelda(infoCelda === chipKey ? null : chipKey);
-                        }}
-                        className="absolute -top-1 -right-1 bg-white rounded-full shadow"
-                        title="Vista y/o turno principal distinto al de esta pestaña"
-                      >
-                        <Info size={14} className="text-blue-600" />
-                      </button>
-                    )}
-                    {textoAjeno && infoCelda === chipKey && (
-                      <div className="absolute z-10 top-full left-0 mt-1 bg-black text-white text-xs p-1 rounded whitespace-nowrap shadow-lg">
-                        {textoAjeno}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+          ) : (
+            <button onClick={cargarGuardia} className="bg-blue-500 text-white p-2 rounded">
+              Cargar agentes de este paso
+            </button>
+          )}
+        </div>
+      ) : (
+        <>
+          <div className="flex items-center gap-2 mb-4 flex-wrap">
+            <button onClick={() => setMostrarRefuerzo(true)} className="bg-orange-500 text-white p-2 rounded shadow hover:scale-105 transition-transform">
+              + Refuerzo
+            </button>
+            <button onClick={() => setMostrarCambio(true)} className="bg-orange-600 text-white p-2 rounded shadow hover:scale-105 transition-transform">
+              Cambio por planilla
+            </button>
+            <button onClick={cerrarJornada} className="bg-red-600 text-white p-2 rounded shadow hover:scale-105 transition-transform ml-auto">
+              Cerrar Jornada
+            </button>
+            <label className="bg-gray-300 text-gray-700 p-2 rounded cursor-pointer shadow hover:scale-105 transition-transform">
+              Importar cierre
+              <input type="file" accept=".json" onChange={importarCierre} className="hidden" />
+            </label>
+            <Link to="/estadisticas" className="bg-purple-500 text-white p-2 rounded flex items-center shadow hover:scale-105 transition-transform">
+              <BarChart2 size={20} className="mr-2" /> Ver Estadísticas
+            </Link>
           </div>
-        </div>
 
-        <button onClick={limpiarLocalStorage} className="bg-red-500 text-white p-2 rounded mt-4 shadow hover:scale-105 transition-transform">
-          Borrar Todo <Trash2 size={14} />
-        </button>
-      </div>
+          <div className="bg-white p-3 rounded shadow mb-4 flex gap-4 text-sm">
+            <span className={sinTurno > 0 ? 'text-red-600 font-semibold' : 'text-gray-400'}>{sinTurno} sin turno</span>
+            <span className={sinEquipo > 0 ? 'text-red-600 font-semibold' : 'text-gray-400'}>{sinEquipo} sin equipo</span>
+            {pasoActual.vistas.length > 1 && (
+              <span className={sinVista > 0 ? 'text-red-600 font-semibold' : 'text-gray-400'}>{sinVista} sin vista</span>
+            )}
+          </div>
 
-      <div className="mt-4">
-        <h3 className="text-lg font-semibold mb-2">Seleccionar Horario</h3>
-        <select
-          className="border p-2 mb-2"
-          value={selectedHorarioCasilla ?? ''}
-          onChange={(e) => setSelectedHorarioCasilla(Number(e.target.value))}
-        >
-          <option value="" disabled>Selecciona un horario</option>
-          {horasTurno.map((h, index) => (
-            <option key={index} value={index}>{etiquetaHora(h)}</option>
-          ))}
-          <option value={-1}>Equipos</option>
-        </select>
-        <button
-          onClick={generarTextoHorario}
-          className="bg-blue-500 text-white p-2 rounded ml-2 cursor-pointer shadow hover:scale-105 transition-transform"
-          disabled={selectedHorarioCasilla === null}
-        >
-          Generar Texto
-        </button>
-      </div>
-
-      {horarioTexto && (
-        <div className="mt-4 bg-white p-4 rounded shadow">
-          <h3 className="text-lg font-semibold mb-2">Texto Generado</h3>
-          <pre className="whitespace-pre-wrap">{horarioTexto}</pre>
-          <button onClick={eliminarTextoHorario} className="bg-red-500 text-white p-2 rounded mt-2 shadow hover:scale-105 transition-transform">
-            Eliminar Texto
-          </button>
-        </div>
-      )}
-
-      <div className="overflow-x-auto">
-        <table className="w-full bg-white shadow-md rounded">
-          <thead>
-            <tr>
-              <th className="border p-2 w-32">{vistaActual.nombre || 'Casillas'}</th>
-              {horasTurno.map((h, index) => (
-                <th key={index} className={`border p-2 ${index === columnaEnVivoPantalla ? 'bg-yellow-100' : ''}`}>
-                  {etiquetaHora(h)}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {vistaActual.casillas.map((casilla, filaIndex) => (
-              <tr key={casilla.id}>
-                <td className="border p-2 w-32 font-bold">{casilla.nombre}</td>
-                {horasTurno.map((h, columnaIndex) => {
-                  const celda = matrizActual[filaIndex]?.[h] ?? null;
-                  const agente = celda ? agentePorId(celda) : null;
-                  const textoAjeno = agente ? infoAjeno(agente) : null;
-                  const cellKey = `${filaIndex}-${h}`;
-                  return (
-                    <td
-                      key={columnaIndex}
-                      className={`relative border p-2 w-24 h-12 ${columnaIndex === columnaEnVivoPantalla ? 'bg-yellow-50' : ''}`}
-                      onDragOver={manejarDragOver}
-                      onDrop={(e) => manejarDrop(e, filaIndex, columnaIndex)}
-                      onClick={() => manejarClickFicha(filaIndex, columnaIndex)}
+          {pendientes.length > 0 && (
+            <div className="bg-yellow-50 border border-yellow-300 p-4 rounded shadow mb-4">
+              <h3 className="font-semibold mb-2">Pendientes de asignar</h3>
+              {pendientes.map((x) => (
+                <div key={x.id} className="flex items-center gap-2 mb-2 flex-wrap">
+                  <span className="w-40">{x.identidad.apellido}, {x.identidad.nombre}</span>
+                  <select
+                    value={x.registro.turnoPrincipal || ''}
+                    onChange={(e) => asignarCampoAgente(x.id, 'turnoPrincipal', e.target.value)}
+                    className="border p-1"
+                  >
+                    <option value="">Turno...</option>
+                    {pasoActual.turnos.map((t) => (
+                      <option key={t.id} value={t.id}>{t.nombre}</option>
+                    ))}
+                  </select>
+                  <select
+                    value={x.registro.equipo || ''}
+                    onChange={(e) => asignarCampoAgente(x.id, 'equipo', e.target.value)}
+                    className="border p-1"
+                  >
+                    <option value="">Equipo...</option>
+                    {pasoActual.equipos.map((eq) => (
+                      <option key={eq} value={eq}>{eq}</option>
+                    ))}
+                  </select>
+                  {pasoActual.vistas.length > 1 && (
+                    <select
+                      value={x.registro.vistaPrincipal || ''}
+                      onChange={(e) => asignarCampoAgente(x.id, 'vistaPrincipal', e.target.value)}
+                      className="border p-1"
                     >
-                      {agente && (
-                        <div
-                          className={`w-full h-full flex items-center justify-center ${agente.color} text-white rounded cursor-pointer shadow hover:scale-105 transition-transform`}
-                          draggable
-                          onDragStart={(e) => manejarDragStart(e, agente.id, filaIndex, columnaIndex)}
+                      <option value="">Vista...</option>
+                      {pasoActual.vistas.map((v) => (
+                        <option key={v.id} value={v.id}>{v.nombre}</option>
+                      ))}
+                    </select>
+                  )}
+                  <button onClick={() => retirarAgente(x.id)} className="text-red-500 hover:text-red-700 ml-auto flex items-center text-sm">
+                    <LogOut size={14} className="mr-1" /> Retirar
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="mb-4">
+            <div className="flex items-center mb-2">
+              <button
+                onClick={() => setOrdenamiento(ordenamiento === 'alfabetico' ? 'horas' : 'alfabetico')}
+                className="bg-gray-300 text-gray-700 p-2 rounded flex items-center shadow hover:scale-105 transition-transform"
+              >
+                <ArrowUpDown size={20} className="mr-2" />
+                {ordenamiento === 'alfabetico' ? 'Ordenado alfabeticamente' : 'Ordenado por carga horaria'}
+              </button>
+            </div>
+
+            <div className="flex space-x-4 flex-wrap gap-4">
+              {ordenarAgentesPorEquipo().map(({ equipo, agentes: agentesDelEquipo }) => (
+                <div key={equipo} className="flex-1 bg-white p-4 rounded shadow min-w-[200px]">
+                  <h3 className="text-lg font-semibold mb-2">{equipo}</h3>
+                  <div className="flex flex-col gap-2">
+                    {agentesDelEquipo.map((x) => (
+                      <div
+                        key={x.id}
+                        className={`${colorPara(x.id)} p-2 rounded flex items-center text-white cursor-pointer shadow hover:scale-105 transition-transform`}
+                        draggable
+                        onDragStart={(e) => manejarDragStart(e, x.id)}
+                      >
+                        <span className="mr-2">
+                          {x.identidad.apellido}, {x.identidad.nombre} ({horasPorAgente.get(x.id) || 0} h)
+                        </span>
+                        <button
+                          onClick={() => retirarAgente(x.id)}
+                          className="text-white ml-auto"
+                          title="Retirar de la guardia"
                         >
-                          {agente.apellido}
-                        </div>
-                      )}
-                      {textoAjeno && (
+                          <LogOut size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+
+              <div className="flex-1 bg-white p-4 rounded shadow opacity-90 min-w-[200px]">
+                <h3 className="text-lg font-semibold mb-2">
+                  Casilla {columnaEnVivoPantalla !== null ? `(${etiquetaHora(horaAbsolutaActual)})` : '(fuera de este turno)'}
+                </h3>
+                <div className="flex flex-col gap-2">
+                  {agentesEnCasillaAhora.map((x) => {
+                    const textoAjeno = infoAjeno(x.registro);
+                    const chipKey = `casilla-${x.id}`;
+                    return (
+                      <div
+                        key={x.id}
+                        className={`relative ${colorPara(x.id)} p-2 rounded text-white shadow cursor-pointer`}
+                        onClick={() => extenderCasilla(x.id)}
+                        title="Click para sumarle la hora siguiente"
+                      >
+                        {x.identidad.apellido}, {x.identidad.nombre} ({horasPorAgente.get(x.id) || 0} h)
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            setInfoCelda(infoCelda === cellKey ? null : cellKey);
+                            retirarAgente(x.id);
                           }}
-                          className="absolute -top-1 -right-1 bg-white rounded-full shadow"
-                          title="Vista y/o turno principal distinto al de esta pestaña"
+                          className="ml-2"
+                          title="Retirar"
                         >
-                          <Info size={14} className="text-blue-600" />
+                          <LogOut size={12} className="inline" />
                         </button>
-                      )}
-                      {textoAjeno && infoCelda === cellKey && (
-                        <div className="absolute z-10 top-full left-0 mt-1 bg-black text-white text-xs p-1 rounded whitespace-nowrap shadow-lg">
-                          {textoAjeno}
-                        </div>
-                      )}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+                        {textoAjeno && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setInfoCelda(infoCelda === chipKey ? null : chipKey);
+                            }}
+                            className="absolute -top-1 -right-1 bg-white rounded-full shadow"
+                            title="Vista y/o turno principal distinto al de esta pestaña"
+                          >
+                            <Info size={14} className="text-blue-600" />
+                          </button>
+                        )}
+                        {textoAjeno && infoCelda === chipKey && (
+                          <div className="absolute z-10 top-full left-0 mt-1 bg-black text-white text-xs p-1 rounded whitespace-nowrap shadow-lg">
+                            {textoAjeno}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <h3 className="text-lg font-semibold mb-2">Seleccionar Horario</h3>
+            <select
+              className="border p-2 mb-2"
+              value={selectedHorarioCasilla ?? ''}
+              onChange={(e) => setSelectedHorarioCasilla(Number(e.target.value))}
+            >
+              <option value="" disabled>Selecciona un horario</option>
+              {horasTurno.map((h, index) => (
+                <option key={index} value={index}>{etiquetaHora(h)}</option>
+              ))}
+              <option value={-1}>Equipos</option>
+            </select>
+            <button
+              onClick={generarTextoHorario}
+              className="bg-blue-500 text-white p-2 rounded ml-2 cursor-pointer shadow hover:scale-105 transition-transform"
+              disabled={selectedHorarioCasilla === null}
+            >
+              Generar Texto
+            </button>
+          </div>
+
+          {horarioTexto && (
+            <div className="mt-4 bg-white p-4 rounded shadow">
+              <h3 className="text-lg font-semibold mb-2">Texto Generado</h3>
+              <pre className="whitespace-pre-wrap">{horarioTexto}</pre>
+              <button onClick={() => setHorarioTexto('')} className="bg-red-500 text-white p-2 rounded mt-2 shadow hover:scale-105 transition-transform">
+                Eliminar Texto
+              </button>
+            </div>
+          )}
+
+          <div className="overflow-x-auto mt-4">
+            <table className="w-full bg-white shadow-md rounded">
+              <thead>
+                <tr>
+                  <th className="border p-2 w-32">{vistaActual.nombre || 'Casillas'}</th>
+                  {horasTurno.map((h, index) => (
+                    <th key={index} className={`border p-2 ${index === columnaEnVivoPantalla ? 'bg-yellow-100' : ''}`}>
+                      {etiquetaHora(h)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {vistaActual.casillas.map((casilla, filaIndex) => (
+                  <tr key={casilla.id}>
+                    <td className="border p-2 w-32 font-bold">{casilla.nombre}</td>
+                    {horasTurno.map((h, columnaIndex) => {
+                      const celda = matrizActual[filaIndex]?.[h] ?? null;
+                      const identidad = celda ? identidadPorId(celda) : null;
+                      const registro = celda ? operativoPaso.porAgente[celda] : null;
+                      const textoAjeno = registro ? infoAjeno(registro) : null;
+                      const cellKey = `${filaIndex}-${h}`;
+                      return (
+                        <td
+                          key={columnaIndex}
+                          className={`relative border p-2 w-24 h-12 ${columnaIndex === columnaEnVivoPantalla ? 'bg-yellow-50' : ''}`}
+                          onDragOver={manejarDragOver}
+                          onDrop={(e) => manejarDrop(e, filaIndex, columnaIndex)}
+                          onClick={() => manejarClickFicha(filaIndex, columnaIndex)}
+                        >
+                          {identidad && (
+                            <div
+                              className={`w-full h-full flex items-center justify-center ${colorPara(celda)} text-white rounded cursor-pointer shadow hover:scale-105 transition-transform`}
+                              draggable
+                              onDragStart={(e) => manejarDragStart(e, celda, filaIndex, columnaIndex)}
+                            >
+                              {identidad.apellido}
+                            </div>
+                          )}
+                          {textoAjeno && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setInfoCelda(infoCelda === cellKey ? null : cellKey);
+                              }}
+                              className="absolute -top-1 -right-1 bg-white rounded-full shadow"
+                              title="Vista y/o turno principal distinto al de esta pestaña"
+                            >
+                              <Info size={14} className="text-blue-600" />
+                            </button>
+                          )}
+                          {textoAjeno && infoCelda === cellKey && (
+                            <div className="absolute z-10 top-full left-0 mt-1 bg-black text-white text-xs p-1 rounded whitespace-nowrap shadow-lg">
+                              {textoAjeno}
+                            </div>
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
     </div>
   );
 };
@@ -983,6 +1251,7 @@ const App = () => {
         <Route path="/" element={<HorarioEditable />} />
         <Route path="/estadisticas" element={<EstadisticasCasillas />} />
         <Route path="/plantillas" element={<PasoManager />} />
+        <Route path="/agentes" element={<AgentesManager />} />
       </Routes>
     </Router>
   );
