@@ -127,60 +127,95 @@ const EstadisticasCasillas = () => {
     .sort((a, b) => new Date(a.fecha) - new Date(b.fecha) || a.hora - b.hora);
 
   // =========================================================
-  // EXPORTAR INFORME A EXCEL
+  // INFORME EXCEL — dos pasos separados a propósito:
   //
-  // Una hoja por (cierre, vista) con la grilla completa de 24 horas,
-  // más una hoja de estadísticas agregadas por agente/casilla y una
-  // de movimientos del día. Requiere el paquete "xlsx" (SheetJS) —
-  // si no está instalado en el proyecto: npm install xlsx
+  //   1) prepararDatosInforme: arma la información del reporte en una
+  //      forma neutral (arrays simples), sin nada específico de Excel.
+  //      Esta parte NO se toca cuando llegue el archivo de referencia.
+  //
+  //   2) construirLibroExcel: es la ÚNICA función que decide cómo se
+  //      ve cada hoja (columnas, orden, nombres, formato). Hoy arma
+  //      una estructura genérica de placeholder — una hoja por
+  //      grilla + una de estadísticas + una de movimientos. El día
+  //      que tengamos el Excel real de referencia, esta es la única
+  //      función que hay que reescribir; todo lo demás queda igual.
+  //
+  // Requiere el paquete "xlsx" (SheetJS): npm install xlsx
   // =========================================================
+
+  function prepararDatosInforme() {
+    const grillas = [];
+    cierres.forEach((cierre) => {
+      (cierre.vistas || []).forEach((vista) => {
+        const filas = vista.matriz.map((fila, filaIdx) => ({
+          casilla: vista.casillas[filaIdx],
+          horas: fila.map((agenteId) => {
+            if (!agenteId) return '';
+            const agente = (cierre.agentes || []).find((a) => a.id === agenteId);
+            return agente ? `${agente.nombre} ${agente.apellido}` : agenteId;
+          }),
+        }));
+        grillas.push({ pasoNombre: cierre.pasoNombre, vistaNombre: vista.nombre, fecha: cierre.fecha, filas });
+      });
+    });
+
+    const statsFilas = [];
+    Object.entries(estadisticas).forEach(([grupo, porAgente]) => {
+      Object.entries(porAgente).forEach(([agente, porCasilla]) => {
+        Object.entries(porCasilla).forEach(([casilla, veces]) => {
+          statsFilas.push({ grupo, agente, casilla, veces });
+        });
+      });
+    });
+
+    const movimientosFilas = movimientos.map((m) => ({
+      fecha: new Date(m.fecha).toLocaleDateString(),
+      hora: etiquetaHora(m.hora),
+      tipo: m.tipo,
+      detalle:
+        m.tipo === 'cambio' ? `${m.entraNombre} vino por ${m.saleNombre}` :
+        m.tipo === 'refuerzo' ? `${m.agenteNombre} — refuerzo` :
+        m.tipo === 'retiro' ? `${m.agenteNombre} — se retiró` : '',
+    }));
+
+    return { grillas, statsFilas, movimientosFilas };
+  }
+
+  // --- ÚNICA función a reemplazar cuando llegue el Excel de referencia ---
+  function construirLibroExcel({ grillas, statsFilas, movimientosFilas }) {
+    const wb = XLSX.utils.book_new();
+
+    grillas.forEach((g, idx) => {
+      const encabezado = ['Casilla', ...Array.from({ length: 24 }, (_, h) => etiquetaHora(h))];
+      const filas = g.filas.map((f) => [f.casilla, ...f.horas]);
+      const hoja = XLSX.utils.aoa_to_sheet([encabezado, ...filas]);
+      const fechaCorta = new Date(g.fecha).toLocaleDateString().replace(/\//g, '-');
+      const nombreHoja = `${fechaCorta} ${g.vistaNombre || 'Vista'}`.slice(0, 31) || `Hoja${idx}`;
+      XLSX.utils.book_append_sheet(wb, hoja, nombreHoja);
+    });
+
+    const hojaStats = XLSX.utils.aoa_to_sheet([
+      ['Grupo', 'Agente', 'Casilla', 'Veces'],
+      ...statsFilas.map((r) => [r.grupo, r.agente, r.casilla, r.veces]),
+    ]);
+    XLSX.utils.book_append_sheet(wb, hojaStats, 'Casillas por agente');
+
+    const hojaMovimientos = XLSX.utils.aoa_to_sheet([
+      ['Fecha', 'Hora', 'Tipo', 'Detalle'],
+      ...movimientosFilas.map((m) => [m.fecha, m.hora, m.tipo, m.detalle]),
+    ]);
+    XLSX.utils.book_append_sheet(wb, hojaMovimientos, 'Movimientos');
+
+    return wb;
+  }
 
   const generarExcel = () => {
     if (cierres.length === 0) {
       alert('Subí al menos un cierre de jornada primero.');
       return;
     }
-
-    const wb = XLSX.utils.book_new();
-
-    cierres.forEach((cierre, cIdx) => {
-      (cierre.vistas || []).forEach((vista, vIdx) => {
-        const encabezado = ['Casilla', ...Array.from({ length: 24 }, (_, h) => etiquetaHora(h))];
-        const filas = vista.matriz.map((fila, filaIdx) => [
-          vista.casillas[filaIdx],
-          ...fila.map((agenteId) => {
-            if (!agenteId) return '';
-            const agente = (cierre.agentes || []).find((a) => a.id === agenteId);
-            return agente ? `${agente.nombre} ${agente.apellido}` : agenteId;
-          }),
-        ]);
-        const hoja = XLSX.utils.aoa_to_sheet([encabezado, ...filas]);
-        const fechaCorta = new Date(cierre.fecha).toLocaleDateString().replace(/\//g, '-');
-        const nombreHoja = `${fechaCorta} ${vista.nombre || 'Vista'}`.slice(0, 31);
-        XLSX.utils.book_append_sheet(wb, hoja, nombreHoja || `Hoja${cIdx}_${vIdx}`);
-      });
-    });
-
-    const filasStats = [['Grupo', 'Agente', 'Casilla', 'Veces']];
-    Object.entries(estadisticas).forEach(([grupo, porAgente]) => {
-      Object.entries(porAgente).forEach(([agente, porCasilla]) => {
-        Object.entries(porCasilla).forEach(([casilla, veces]) => {
-          filasStats.push([grupo, agente, casilla, veces]);
-        });
-      });
-    });
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(filasStats), 'Casillas por agente');
-
-    const filasMovimientos = [['Fecha', 'Hora', 'Tipo', 'Detalle']];
-    movimientos.forEach((m) => {
-      let detalle = '';
-      if (m.tipo === 'cambio') detalle = `${m.entraNombre} vino por ${m.saleNombre}`;
-      if (m.tipo === 'refuerzo') detalle = `${m.agenteNombre} — refuerzo`;
-      if (m.tipo === 'retiro') detalle = `${m.agenteNombre} — se retiró`;
-      filasMovimientos.push([new Date(m.fecha).toLocaleDateString(), etiquetaHora(m.hora), m.tipo, detalle]);
-    });
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(filasMovimientos), 'Movimientos');
-
+    const datos = prepararDatosInforme();
+    const wb = construirLibroExcel(datos);
     XLSX.writeFile(wb, `informe_${Date.now()}.xlsx`);
   };
 
