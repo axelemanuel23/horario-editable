@@ -758,9 +758,13 @@ const HorarioEditable = () => {
   // una vez asignados, tal cual corresponde.
   const agentesOtraVista = (equipo) => {
     if (!pasoActual || pasoActual.vistas.length <= 1) return [];
+    // No se filtra por "libre ahora mismo": podés necesitar a alguien
+    // que en este momento está en casilla pero va a estar libre dentro
+    // de un rato. El chequeo de choque horario real ya lo hace
+    // buscarConflicto en el momento de soltarlo sobre una celda
+    // puntual — acá alcanza con mostrar a todos los candidatos.
     return activosPresentes.filter(
       (x) =>
-        !idsEnCasillaAhora.has(x.id) &&
         x.registro.equipo === equipo &&
         x.registro.turnoPrincipal === selectedTurnoId &&
         x.registro.vistaPrincipal &&
@@ -875,9 +879,14 @@ const HorarioEditable = () => {
       <div className="p-4 bg-gray-100 min-h-screen">
         <h1 className="text-2xl font-bold mb-4">Gestión de horarios</h1>
         <p className="mb-4">Todavía no hay ninguna plantilla de paso creada.</p>
-        <Link to="/plantillas" className="bg-blue-500 text-white p-2 rounded inline-flex items-center">
-          <Settings size={18} className="mr-2" /> Crear la primera plantilla
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link to="/plantillas" className="bg-blue-500 text-white p-2 rounded inline-flex items-center">
+            <Settings size={18} className="mr-2" /> Crear la primera plantilla
+          </Link>
+          <Link to="/estadisticas" className="bg-purple-500 text-white p-2 rounded inline-flex items-center">
+            <BarChart2 size={18} className="mr-2" /> Ver Estadísticas
+          </Link>
+        </div>
       </div>
     );
   }
@@ -1111,6 +1120,9 @@ const HorarioEditable = () => {
         <Link to="/plantillas" className="text-gray-500 hover:text-gray-700 flex items-center text-sm">
           <Settings size={16} className="mr-1" /> Plantillas
         </Link>
+        <Link to="/estadisticas" className="bg-purple-500 text-white p-2 rounded flex items-center shadow hover:scale-105 transition-transform text-sm">
+          <BarChart2 size={16} className="mr-2" /> Ver Estadísticas
+        </Link>
       </div>
 
       {operativoPaso.activosHoyIds.length === 0 ? (
@@ -1164,9 +1176,6 @@ const HorarioEditable = () => {
               Importar cierre
               <input type="file" accept=".json" onChange={importarCierre} className="hidden" />
             </label>
-            <Link to="/estadisticas" className="bg-purple-500 text-white p-2 rounded flex items-center shadow hover:scale-105 transition-transform">
-              <BarChart2 size={20} className="mr-2" /> Ver Estadísticas
-            </Link>
           </div>
 
           <div className="bg-white p-3 rounded shadow mb-4 flex gap-4 text-sm">
