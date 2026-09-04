@@ -40,7 +40,18 @@ function operativoVacio() {
 }
 
 function registroOperativoVacio() {
-  return { equipo: null, vistaPrincipal: null, turnoPrincipal: null, ausente: false, retiradoHora: null };
+  return {
+    equipo: null,
+    vistaPrincipal: null,
+    // Dónde se lo ve HOY en los paneles principales — arranca igual a
+    // vistaPrincipal quien se le asigna, pero "Enviar a otro sector"
+    // puede moverla acá sin tocar vistaPrincipal (que es su vista real
+    // y sigue usándose para el ícono ⓘ de "es un préstamo").
+    vistaAsignadaHoy: null,
+    turnoPrincipal: null,
+    ausente: false,
+    retiradoHora: null,
+  };
 }
 
 const HorarioEditable = () => {
@@ -107,6 +118,7 @@ const HorarioEditable = () => {
   const [tick, setTick] = useState(0);
   const [confirmationModal, setConfirmationModal] = useState({ show: false, action: null });
   const [conflictoModal, setConflictoModal] = useState({ show: false });
+  const [modalCierrePendientes, setModalCierrePendientes] = useState(false);
   const [otrasVistasAbiertas, setOtrasVistasAbiertas] = useState(new Set());
   const [selectedHorarioCasilla, setSelectedHorarioCasilla] = useState(null);
   const [horarioTexto, setHorarioTexto] = useState('');
@@ -426,6 +438,7 @@ const HorarioEditable = () => {
     const nuevasMatrices = { ...matrices };
     pasoActual.vistas.forEach((v) => delete nuevasMatrices[matrizKey(pasoActual.id, v.id)]);
     setMatrices(nuevasMatrices);
+    localStorage.setItem('matrices_v3', JSON.stringify(nuevasMatrices));
   };
 
   const reiniciarAsignaciones = () => {
@@ -434,7 +447,10 @@ const HorarioEditable = () => {
     operativoPaso.activosHoyIds.forEach((id) => {
       porAgente[id] = registroOperativoVacio();
     });
-    actualizarOperativoPaso({ ...operativoPaso, porAgente });
+    const nuevoOperativo = { ...operativoPaso, porAgente };
+    actualizarOperativoPaso(nuevoOperativo);
+    const nuevoEstadoOperativo = { ...estadoOperativo, [pasoActual.id]: nuevoOperativo };
+    localStorage.setItem('estadoOperativo_v1', JSON.stringify(nuevoEstadoOperativo));
   };
 
   const reiniciarTodoSinArchivo = () => {
@@ -442,15 +458,18 @@ const HorarioEditable = () => {
     const nuevasMatrices = { ...matrices };
     pasoActual.vistas.forEach((v) => delete nuevasMatrices[matrizKey(pasoActual.id, v.id)]);
     setMatrices(nuevasMatrices);
-    actualizarOperativoPaso(operativoVacio());
+    localStorage.setItem('matrices_v3', JSON.stringify(nuevasMatrices));
+
+    const nuevoEstadoOperativo = { ...estadoOperativo };
+    delete nuevoEstadoOperativo[pasoActual.id];
+    setEstadoOperativo(nuevoEstadoOperativo);
+    localStorage.setItem('estadoOperativo_v1', JSON.stringify(nuevoEstadoOperativo));
+
     setLastProcessedHour(null);
     localStorage.removeItem('lastProcessedHour_v3');
   };
 
-  const cerrarJornada = () => {
-    if (!pasoActual) return;
-    if (!window.confirm('¿Cerrar la jornada? Se descarga el archivo del día y se resetea todo lo operativo para arrancar de cero.')) return;
-
+  const ejecutarCierre = (operativoParaSnapshot = operativoPaso) => {
     const snapshot = {
       pasoId: pasoActual.id,
       pasoNombre: pasoActual.nombre,
@@ -461,9 +480,9 @@ const HorarioEditable = () => {
         matriz: matrices[matrizKey(pasoActual.id, v.id)] || crearMatrizVacia(v.casillas.length),
       })),
       turnos: pasoActual.turnos,
-      agentes: operativoPaso.activosHoyIds.map((id) => {
+      agentes: operativoParaSnapshot.activosHoyIds.map((id) => {
         const identidad = identidadPorId(id);
-        const registro = operativoPaso.porAgente[id] || registroOperativoVacio();
+        const registro = operativoParaSnapshot.porAgente[id] || registroOperativoVacio();
         const vistaNombre = pasoActual.vistas.find((v) => v.id === registro.vistaPrincipal)?.nombre || null;
         const turnoNombre = pasoActual.turnos.find((t) => t.id === registro.turnoPrincipal)?.nombre || null;
         return {
@@ -479,7 +498,7 @@ const HorarioEditable = () => {
           horasTrabajadas: horasPorAgente.get(id) || 0,
         };
       }),
-      movimientos: operativoPaso.movimientos.map((m) => ({
+      movimientos: operativoParaSnapshot.movimientos.map((m) => ({
         ...m,
         agenteNombre: m.agenteId ? nombreCompleto(identidadPorId(m.agenteId)) : undefined,
         entraNombre: m.entra ? nombreCompleto(identidadPorId(m.entra)) : undefined,
@@ -502,10 +521,44 @@ const HorarioEditable = () => {
     const nuevasMatrices = { ...matrices };
     pasoActual.vistas.forEach((v) => delete nuevasMatrices[matrizKey(pasoActual.id, v.id)]);
     setMatrices(nuevasMatrices);
-    actualizarOperativoPaso(operativoVacio());
+    localStorage.setItem('matrices_v3', JSON.stringify(nuevasMatrices));
+
+    const nuevoEstadoOperativo = { ...estadoOperativo };
+    delete nuevoEstadoOperativo[pasoActual.id];
+    setEstadoOperativo(nuevoEstadoOperativo);
+    localStorage.setItem('estadoOperativo_v1', JSON.stringify(nuevoEstadoOperativo));
+
     setLastProcessedHour(null);
     localStorage.removeItem('lastProcessedHour_v3');
   };
+
+  // Si quedan agentes activos sin terminar de asignar (turno/equipo/
+  // vista), antes de cerrar se pregunta si corresponde marcarlos
+  // ausentes — y eso queda como movimiento en el informe, en vez de
+  // desaparecer sin dejar rastro.
+  const cerrarJornada = () => {
+    if (!pasoActual) return;
+    if (pendientes.length > 0) {
+      setModalCierrePendientes(true);
+      return;
+    }
+    if (!window.confirm('¿Cerrar la jornada? Se descarga el archivo del día y se resetea todo lo operativo para arrancar de cero.')) return;
+    ejecutarCierre();
+  };
+
+  const confirmarCierreConAusentes = () => {
+    const porAgente = { ...operativoPaso.porAgente };
+    const movimientosNuevos = [...operativoPaso.movimientos];
+    pendientes.forEach((x) => {
+      porAgente[x.id] = { ...(porAgente[x.id] || registroOperativoVacio()), ausente: true };
+      movimientosNuevos.push({ tipo: 'ausente_no_asignado', agenteId: x.id, hora: horaAbsolutaActual });
+    });
+    const operativoActualizado = { ...operativoPaso, porAgente, movimientos: movimientosNuevos };
+    setModalCierrePendientes(false);
+    ejecutarCierre(operativoActualizado);
+  };
+
+  const cancelarModalCierre = () => setModalCierrePendientes(false);
 
   const importarCierre = (event) => {
     const file = event.target.files[0];
@@ -763,12 +816,16 @@ const HorarioEditable = () => {
     // de un rato. El chequeo de choque horario real ya lo hace
     // buscarConflicto en el momento de soltarlo sobre una celda
     // puntual — acá alcanza con mostrar a todos los candidatos.
+    // Se excluye a quien ya fue "enviado" formalmente acá (ya aparece
+    // en el panel principal, no hace falta duplicarlo en este listado
+    // de solo-consulta/préstamo puntual a la grilla).
     return activosPresentes.filter(
       (x) =>
         x.registro.equipo === equipo &&
         x.registro.turnoPrincipal === selectedTurnoId &&
         x.registro.vistaPrincipal &&
-        x.registro.vistaPrincipal !== selectedVistaId
+        x.registro.vistaPrincipal !== selectedVistaId &&
+        x.registro.vistaAsignadaHoy !== selectedVistaId
     );
   };
 
@@ -799,9 +856,37 @@ const HorarioEditable = () => {
 
   const asignarCampoAgente = (agenteId, campo, valor) => {
     const registro = operativoPaso.porAgente[agenteId] || registroOperativoVacio();
+    const nuevoRegistro = { ...registro, [campo]: valor };
+    // Al fijar la vista principal por primera vez, arranca mostrándose
+    // en su propio panel — "Enviar" es lo único que después la mueve.
+    if (campo === 'vistaPrincipal' && !registro.vistaAsignadaHoy) {
+      nuevoRegistro.vistaAsignadaHoy = valor;
+    }
     actualizarOperativoPaso({
       ...operativoPaso,
-      porAgente: { ...operativoPaso.porAgente, [agenteId]: { ...registro, [campo]: valor } },
+      porAgente: { ...operativoPaso.porAgente, [agenteId]: nuevoRegistro },
+    });
+  };
+
+  // Envía a un agente a un panel (vista+equipo) de otro sector: pasa a
+  // mostrarse ahí directamente en la lista principal, con la leyenda
+  // de "es de otro sector" (basada en vistaPrincipal, que no se toca).
+  const enviarAOtraVista = (agenteId, vistaDestinoId, equipoDestino) => {
+    const registro = operativoPaso.porAgente[agenteId] || registroOperativoVacio();
+    actualizarOperativoPaso({
+      ...operativoPaso,
+      porAgente: {
+        ...operativoPaso.porAgente,
+        [agenteId]: { ...registro, vistaAsignadaHoy: vistaDestinoId, equipo: equipoDestino },
+      },
+    });
+  };
+
+  const traerDeVuelta = (agenteId) => {
+    const registro = operativoPaso.porAgente[agenteId] || registroOperativoVacio();
+    actualizarOperativoPaso({
+      ...operativoPaso,
+      porAgente: { ...operativoPaso.porAgente, [agenteId]: { ...registro, vistaAsignadaHoy: registro.vistaPrincipal } },
     });
   };
 
@@ -812,8 +897,8 @@ const HorarioEditable = () => {
         !idsEnCasillaAhora.has(x.id) &&
         x.registro.turnoPrincipal &&
         x.registro.equipo &&
-        (pasoActual.vistas.length <= 1 || x.registro.vistaPrincipal) &&
-        (pasoActual.vistas.length <= 1 || x.registro.vistaPrincipal === selectedVistaId) &&
+        (pasoActual.vistas.length <= 1 || x.registro.vistaAsignadaHoy) &&
+        (pasoActual.vistas.length <= 1 || x.registro.vistaAsignadaHoy === selectedVistaId) &&
         x.registro.turnoPrincipal === selectedTurnoId
     );
 
@@ -1086,6 +1171,31 @@ const HorarioEditable = () => {
         </div>
       )}
 
+      {modalCierrePendientes && (
+        <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">
+          <div className="bg-white p-4 rounded w-96">
+            <h3 className="font-semibold mb-2">Hay agentes sin terminar de asignar</h3>
+            <p className="text-sm mb-2">
+              Estos agentes quedaron activos hoy pero sin completar turno/equipo/vista. Si cerrás la jornada ahora,
+              van a quedar marcados como <strong>ausentes</strong> y eso va a figurar en el informe:
+            </p>
+            <ul className="text-sm mb-4 max-h-40 overflow-y-auto list-disc pl-5">
+              {pendientes.map((x) => (
+                <li key={x.id}>{x.identidad.apellido}, {x.identidad.nombre}</li>
+              ))}
+            </ul>
+            <div className="flex gap-2">
+              <button onClick={confirmarCierreConAusentes} className="bg-red-600 text-white p-2 rounded flex-1">
+                Marcar ausentes y cerrar
+              </button>
+              <button onClick={cancelarModalCierre} className="bg-gray-300 p-2 rounded flex-1">
+                Volver (los asigno primero)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="mb-4 flex space-x-4 items-center flex-wrap gap-2">
         <select value={pasoActual.id} onChange={(e) => setSelectedPasoId(e.target.value)} className="border p-2 font-semibold">
           {pasos.map((p) => (
@@ -1105,14 +1215,6 @@ const HorarioEditable = () => {
             <option key={t.id} value={t.id}>{t.nombre}</option>
           ))}
         </select>
-
-        {pasoActual.vistas.length > 1 && (
-          <select value={selectedVistaId || ''} onChange={(e) => setSelectedVistaId(e.target.value)} className="border p-2">
-            {pasoActual.vistas.map((v) => (
-              <option key={v.id} value={v.id}>{v.nombre}</option>
-            ))}
-          </select>
-        )}
 
         <Link to="/agentes" className="text-gray-500 hover:text-gray-700 flex items-center text-sm">
           <Users size={16} className="mr-1" /> Agentes
@@ -1233,7 +1335,7 @@ const HorarioEditable = () => {
           )}
 
           <div className="mb-4">
-            <div className="flex items-center mb-2">
+            <div className="flex items-center mb-2 gap-2">
               <button
                 onClick={() => setOrdenamiento(ordenamiento === 'alfabetico' ? 'horas' : 'alfabetico')}
                 className="bg-gray-300 text-gray-700 p-2 rounded flex items-center shadow hover:scale-105 transition-transform"
@@ -1241,34 +1343,83 @@ const HorarioEditable = () => {
                 <ArrowUpDown size={20} className="mr-2" />
                 {ordenamiento === 'alfabetico' ? 'Ordenado alfabeticamente' : 'Ordenado por carga horaria'}
               </button>
+
+              {pasoActual.vistas.length > 1 && (
+                <select value={selectedVistaId || ''} onChange={(e) => setSelectedVistaId(e.target.value)} className="border p-2">
+                  {pasoActual.vistas.map((v) => (
+                    <option key={v.id} value={v.id}>{v.nombre}</option>
+                  ))}
+                </select>
+              )}
             </div>
 
             <div className="flex space-x-4 flex-wrap gap-4">
               {ordenarAgentesPorEquipo().map(({ equipo, agentes: agentesDelEquipo }) => {
                 const prestables = agentesOtraVista(equipo);
+                const hayPrestamos = agentesDelEquipo.some((x) => x.registro.vistaPrincipal !== selectedVistaId);
+                const otrasVistasDestino = pasoActual.vistas.filter((v) => v.id !== selectedVistaId);
                 return (
                   <div key={equipo} className="flex-1 bg-white p-4 rounded shadow min-w-[200px]">
                     <h3 className="text-lg font-semibold mb-2">{equipo}</h3>
+                    {hayPrestamos && (
+                      <div className="text-xs bg-yellow-100 text-yellow-800 rounded p-1 mb-2">
+                        ⚠ Tiene agente(s) que pertenece(n) a otro sector
+                      </div>
+                    )}
                     <div className="flex flex-col gap-2">
-                      {agentesDelEquipo.map((x) => (
-                        <div
-                          key={x.id}
-                          className={`${colorPara(x.id)} p-2 rounded flex items-center text-white cursor-pointer shadow hover:scale-105 transition-transform`}
-                          draggable
-                          onDragStart={(e) => manejarDragStart(e, x.id)}
-                        >
-                          <span className="mr-2">
-                            {x.identidad.apellido}, {x.identidad.nombre} ({horasPorAgente.get(x.id) || 0} h)
-                          </span>
-                          <button
-                            onClick={() => retirarAgente(x.id)}
-                            className="text-white ml-auto"
-                            title="Retirar de la guardia"
+                      {agentesDelEquipo.map((x) => {
+                        const esPrestamo = x.registro.vistaPrincipal !== selectedVistaId;
+                        return (
+                          <div
+                            key={x.id}
+                            className={`${colorPara(x.id)} p-2 rounded flex items-center text-white cursor-pointer shadow hover:scale-105 transition-transform flex-wrap`}
+                            draggable
+                            onDragStart={(e) => manejarDragStart(e, x.id)}
                           >
-                            <LogOut size={14} />
-                          </button>
-                        </div>
-                      ))}
+                            <span className="mr-2">
+                              {x.identidad.apellido}, {x.identidad.nombre} ({horasPorAgente.get(x.id) || 0} h)
+                            </span>
+                            {pasoActual.vistas.length > 1 && !esPrestamo && (
+                              <select
+                                onChange={(e) => {
+                                  if (!e.target.value) return;
+                                  const [vistaId, equipoDestino] = e.target.value.split('::');
+                                  enviarAOtraVista(x.id, vistaId, equipoDestino);
+                                  e.target.value = '';
+                                }}
+                                defaultValue=""
+                                className="text-black text-xs rounded mr-2"
+                                title="Enviar a un panel de otro sector"
+                              >
+                                <option value="">Enviar a...</option>
+                                {otrasVistasDestino.map((v) =>
+                                  pasoActual.equipos.map((eq) => (
+                                    <option key={`${v.id}::${eq}`} value={`${v.id}::${eq}`}>
+                                      {v.nombre} — {eq}
+                                    </option>
+                                  ))
+                                )}
+                              </select>
+                            )}
+                            {esPrestamo && (
+                              <button
+                                onClick={() => traerDeVuelta(x.id)}
+                                className="text-xs bg-white bg-opacity-30 rounded px-1 mr-2"
+                                title="Volver a su propio sector"
+                              >
+                                Volver a su sector
+                              </button>
+                            )}
+                            <button
+                              onClick={() => retirarAgente(x.id)}
+                              className="text-white ml-auto"
+                              title="Retirar de la guardia"
+                            >
+                              <LogOut size={14} />
+                            </button>
+                          </div>
+                        );
+                      })}
                     </div>
 
                     {pasoActual.vistas.length > 1 && (
@@ -1295,7 +1446,7 @@ const HorarioEditable = () => {
                                 title="Viene de otro sector — al asignarlo va a aparecer con el ícono de info"
                               >
                                 <span className="mr-2">
-                                  {x.identidad.apellido}, {x.identidad.nombre} —{' '}
+                                  {x.identidad.apellido}, {x.identidad.nombre} ({horasPorAgente.get(x.id) || 0} h) —{' '}
                                   {pasoActual.vistas.find((v) => v.id === x.registro.vistaPrincipal)?.nombre}
                                 </span>
                               </div>
