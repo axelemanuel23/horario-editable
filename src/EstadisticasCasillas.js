@@ -36,6 +36,9 @@ function formatearMovimiento(m, fecha) {
   if (m.tipo === 'retiro') {
     return `${fechaTxt} ${etiquetaHora(m.hora)} — ${m.agenteNombre} — se retiró`;
   }
+  if (m.tipo === 'ausente_no_asignado') {
+    return `${fechaTxt} ${etiquetaHora(m.hora)} — ${m.agenteNombre} — no fue asignado, quedó ausente al cierre`;
+  }
   return '';
 }
 
@@ -175,7 +178,8 @@ const EstadisticasCasillas = () => {
       detalle:
         m.tipo === 'cambio' ? `${m.entraNombre} vino por ${m.saleNombre}` :
         m.tipo === 'refuerzo' ? `${m.agenteNombre} — refuerzo` :
-        m.tipo === 'retiro' ? `${m.agenteNombre} — se retiró` : '',
+        m.tipo === 'retiro' ? `${m.agenteNombre} — se retiró` :
+        m.tipo === 'ausente_no_asignado' ? `${m.agenteNombre} — no fue asignado, quedó ausente` : '',
     }));
 
     return { grillas, statsFilas, movimientosFilas };
