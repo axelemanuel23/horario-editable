@@ -43,6 +43,10 @@ function operativoVacio() {
 function registroOperativoVacio() {
   return {
     equipo: null,
+    // El equipo con el que arrancó (nunca lo toca "Enviar"), para poder
+    // avisarle a su panel de origen "esto es tuyo, está del otro lado"
+    // aunque .equipo ya haya cambiado al equipo de destino.
+    equipoOriginal: null,
     vistaPrincipal: null,
     // Dónde se lo ve HOY en los paneles principales — arranca igual a
     // vistaPrincipal quien se le asigna, pero "Enviar a otro sector"
@@ -292,6 +296,59 @@ const HorarioEditable = () => {
     if (ajenoVista && vistaAgente) partes.push(vistaAgente.nombre);
     if (ajenoTurno && turnoAgente) partes.push(`turno ${CAPITALIZAR(turnoAgente.nombre)}`);
     return partes.length ? `Agente de ${partes.join(' — ')}` : null;
+  };
+
+  // Arma un texto tipo "Entrada — Hecho: 09:00-10:00 · Falta: 14:00-16:00"
+  // con las horas de casilla ya trabajadas y las que le quedan hoy, en
+  // TODAS las vistas del paso. Útil para un agente prestado: además del
+  // total de horas, importa saber EN QUÉ franja las hizo o las va a
+  // hacer. El corte pasado/futuro usa la misma referencia (posición
+  // dentro del turno actualmente seleccionado) que ya usan Retirar y
+  // Cambio por planilla.
+  const horariosDeAgente = (agenteId) => {
+    if (!pasoActual) return '';
+    const partes = [];
+    pasoActual.vistas.forEach((vista) => {
+      const matriz = matrices[matrizKey(pasoActual.id, vista.id)];
+      if (!matriz) return;
+      const horas = new Set();
+      matriz.forEach((fila) => {
+        fila.forEach((id, h) => {
+          if (id === agenteId) horas.add(h);
+        });
+      });
+      if (horas.size === 0) return;
+
+      const agruparRangos = (lista) => {
+        if (lista.length === 0) return '';
+        const ordenadas = [...lista].sort((a, b) => a - b);
+        const rangos = [];
+        let inicio = ordenadas[0];
+        let anterior = ordenadas[0];
+        for (let i = 1; i < ordenadas.length; i++) {
+          if (ordenadas[i] === anterior + 1) {
+            anterior = ordenadas[i];
+            continue;
+          }
+          rangos.push([inicio, anterior]);
+          inicio = ordenadas[i];
+          anterior = ordenadas[i];
+        }
+        rangos.push([inicio, anterior]);
+        return rangos
+          .map(([ini, fin]) => (fin === ini ? etiquetaHora(ini) : `${etiquetaHora(ini)}-${etiquetaHora((fin + 1) % HORAS_DIA)}`))
+          .join(', ');
+      };
+
+      const pasadas = [...horas].filter((h) => !esHoraFutura(h));
+      const futuras = [...horas].filter((h) => esHoraFutura(h));
+
+      const sub = [];
+      if (pasadas.length) sub.push(`Hecho: ${agruparRangos(pasadas)}`);
+      if (futuras.length) sub.push(`Falta: ${agruparRangos(futuras)}`);
+      partes.push(`${vista.nombre || 'Casilla'} — ${sub.join(' · ')}`);
+    });
+    return partes.join(' | ');
   };
 
   const idsEnCasillaAhora = useMemo(() => {
@@ -885,23 +942,34 @@ const HorarioEditable = () => {
     if (campo === 'vistaPrincipal' && !registro.vistaAsignadaHoy) {
       nuevoRegistro.vistaAsignadaHoy = valor;
     }
+    // Recordar el equipo de origen la primera vez, para poder avisarle
+    // a ese panel más adelante si se lo termina enviando a otro lado.
+    if (campo === 'equipo' && !registro.equipoOriginal) {
+      nuevoRegistro.equipoOriginal = valor;
+    }
     actualizarOperativoPaso({
       ...operativoPaso,
       porAgente: { ...operativoPaso.porAgente, [agenteId]: nuevoRegistro },
     });
   };
 
-  // Envía a un agente a un panel (vista+equipo) de otro sector: pasa a
-  // mostrarse ahí directamente en la lista principal, con la leyenda
-  // de "es de otro sector" (basada en vistaPrincipal, que no se toca).
-  const enviarAOtraVista = (agenteId, vistaDestinoId, equipoDestino) => {
+  // Mueve a un agente a un panel (vista+equipo) — sirve tanto para
+  // "enviarlo" a otra vista (préstamo) como para cambiar de equipo
+  // dentro de su propia vista (ej. Corredor -> Micro). La diferencia:
+  // si el destino es su propia vista, ese pasa a ser su nuevo equipo
+  // "de casa" (equipoOriginal se actualiza, no es un préstamo). Si el
+  // destino es OTRA vista, equipoOriginal no se toca — sigue siendo
+  // "de acá", solo que hoy está prestado allá.
+  const moverAgente = (agenteId, vistaDestinoId, equipoDestino) => {
     const registro = operativoPaso.porAgente[agenteId] || registroOperativoVacio();
+    const esDentroDeSuVista = vistaDestinoId === registro.vistaPrincipal;
+    const nuevoRegistro = { ...registro, vistaAsignadaHoy: vistaDestinoId, equipo: equipoDestino };
+    if (esDentroDeSuVista) {
+      nuevoRegistro.equipoOriginal = equipoDestino;
+    }
     actualizarOperativoPaso({
       ...operativoPaso,
-      porAgente: {
-        ...operativoPaso.porAgente,
-        [agenteId]: { ...registro, vistaAsignadaHoy: vistaDestinoId, equipo: equipoDestino },
-      },
+      porAgente: { ...operativoPaso.porAgente, [agenteId]: nuevoRegistro },
     });
   };
 
@@ -909,7 +977,14 @@ const HorarioEditable = () => {
     const registro = operativoPaso.porAgente[agenteId] || registroOperativoVacio();
     actualizarOperativoPaso({
       ...operativoPaso,
-      porAgente: { ...operativoPaso.porAgente, [agenteId]: { ...registro, vistaAsignadaHoy: registro.vistaPrincipal } },
+      porAgente: {
+        ...operativoPaso.porAgente,
+        [agenteId]: {
+          ...registro,
+          vistaAsignadaHoy: registro.vistaPrincipal,
+          equipo: registro.equipoOriginal || registro.equipo,
+        },
+      },
     });
   };
 
@@ -941,7 +1016,9 @@ const HorarioEditable = () => {
     }));
   };
 
-  const agentesEnCasillaAhora = activosInfo.filter((x) => idsEnCasillaAhora.has(x.id));
+  const agentesEnCasillaAhora = activosInfo.filter(
+    (x) => idsEnCasillaAhora.has(x.id) && x.registro.turnoPrincipal === selectedTurnoId
+  );
 
   const colorPara = (id) => colors[Math.abs(hashCode(id)) % colors.length];
   function hashCode(str) {
@@ -1399,7 +1476,6 @@ const HorarioEditable = () => {
               {ordenarAgentesPorEquipo().map(({ equipo, agentes: agentesDelEquipo }) => {
                 const prestables = agentesOtraVista(equipo);
                 const hayPrestamos = agentesDelEquipo.some((x) => x.registro.vistaPrincipal !== selectedVistaId);
-                const otrasVistasDestino = pasoActual.vistas.filter((v) => v.id !== selectedVistaId);
                 return (
                   <div key={equipo} className="flex-1 bg-white p-4 rounded shadow min-w-[200px]">
                     <h3 className="text-lg font-semibold mb-2">{equipo}</h3>
@@ -1411,6 +1487,15 @@ const HorarioEditable = () => {
                     <div className="flex flex-col gap-2">
                       {agentesDelEquipo.map((x) => {
                         const esPrestamo = x.registro.vistaPrincipal !== selectedVistaId;
+                        // Destinos posibles: cualquier (vista, equipo) que no sea
+                        // exactamente donde ya está — incluye tanto otras vistas
+                        // (préstamo) como otros equipos de su propia vista actual
+                        // (ej. Corredor -> Micro sin cambiar de sector).
+                        const destinos = pasoActual.vistas.flatMap((v) =>
+                          pasoActual.equipos
+                            .filter((eq) => !(v.id === selectedVistaId && eq === x.registro.equipo))
+                            .map((eq) => ({ v, eq }))
+                        );
                         return (
                           <div
                             key={x.id}
@@ -1421,33 +1506,31 @@ const HorarioEditable = () => {
                             <span className="mr-2">
                               {x.identidad.apellido}, {x.identidad.nombre} ({horasPorAgente.get(x.id) || 0} h)
                             </span>
-                            {pasoActual.vistas.length > 1 && !esPrestamo && (
+                            {!esPrestamo && destinos.length > 0 && (
                               <select
                                 onChange={(e) => {
                                   if (!e.target.value) return;
                                   const [vistaId, equipoDestino] = e.target.value.split('::');
-                                  enviarAOtraVista(x.id, vistaId, equipoDestino);
+                                  moverAgente(x.id, vistaId, equipoDestino);
                                   e.target.value = '';
                                 }}
                                 defaultValue=""
                                 className="text-black text-xs rounded mr-2"
-                                title="Enviar a un panel de otro sector"
+                                title="Mover a otro panel (mismo sector u otro)"
                               >
-                                <option value="">Enviar a...</option>
-                                {otrasVistasDestino.map((v) =>
-                                  pasoActual.equipos.map((eq) => (
-                                    <option key={`${v.id}::${eq}`} value={`${v.id}::${eq}`}>
-                                      {v.nombre} — {eq}
-                                    </option>
-                                  ))
-                                )}
+                                <option value="">Mover a...</option>
+                                {destinos.map(({ v, eq }) => (
+                                  <option key={`${v.id}::${eq}`} value={`${v.id}::${eq}`}>
+                                    {pasoActual.vistas.length > 1 ? `${v.nombre} — ${eq}` : eq}
+                                  </option>
+                                ))}
                               </select>
                             )}
                             {esPrestamo && (
                               <button
                                 onClick={() => traerDeVuelta(x.id)}
                                 className="text-xs bg-white bg-opacity-30 rounded px-1 mr-2"
-                                title="Volver a su propio sector"
+                                title={`Volver a su propio sector. ${horariosDeAgente(x.id)}`}
                               >
                                 Volver a su sector
                               </button>
@@ -1463,6 +1546,35 @@ const HorarioEditable = () => {
                         );
                       })}
                     </div>
+
+                    {(() => {
+                      const enviadosFuera = activosPresentes.filter(
+                        (x) =>
+                          x.registro.equipoOriginal === equipo &&
+                          x.registro.vistaPrincipal === selectedVistaId &&
+                          x.registro.vistaAsignadaHoy &&
+                          x.registro.vistaAsignadaHoy !== selectedVistaId
+                      );
+                      if (enviadosFuera.length === 0) return null;
+                      return (
+                        <div className="mt-2 border-t pt-2">
+                          <div className="text-xs bg-orange-100 text-orange-800 rounded p-1 mb-1">
+                            ⚠ Tuyo(s) en otro sector:
+                          </div>
+                          {enviadosFuera.map((x) => (
+                            <div key={x.id} className="text-xs flex items-center gap-1 mb-1">
+                              <span title={horariosDeAgente(x.id)}>
+                                {x.identidad.apellido}, {x.identidad.nombre} — en{' '}
+                                {pasoActual.vistas.find((v) => v.id === x.registro.vistaAsignadaHoy)?.nombre} ({x.registro.equipo})
+                              </span>
+                              <button onClick={() => traerDeVuelta(x.id)} className="text-blue-600 underline">
+                                Traer
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
 
                     {pasoActual.vistas.length > 1 && (
                       <div className="mt-2 border-t pt-2">
@@ -1485,7 +1597,7 @@ const HorarioEditable = () => {
                                 className={`${colorPara(x.id)} p-2 rounded flex items-center text-white cursor-pointer shadow opacity-80 hover:opacity-100`}
                                 draggable
                                 onDragStart={(e) => manejarDragStart(e, x.id)}
-                                title="Viene de otro sector — al asignarlo va a aparecer con el ícono de info"
+                                title={`Viene de otro sector. ${horariosDeAgente(x.id)}`}
                               >
                                 <span className="mr-2">
                                   {x.identidad.apellido}, {x.identidad.nombre} ({horasPorAgente.get(x.id) || 0} h) —{' '}
@@ -1542,6 +1654,9 @@ const HorarioEditable = () => {
                         {textoAjeno && infoCelda === chipKey && (
                           <div className="absolute z-10 top-full left-0 mt-1 bg-black text-white text-xs p-1 rounded whitespace-nowrap shadow-lg">
                             {textoAjeno}
+                            {x.registro.vistaPrincipal !== selectedVistaId && (
+                              <div className="mt-1 pt-1 border-t border-gray-600">{horariosDeAgente(x.id)}</div>
+                            )}
                           </div>
                         )}
                       </div>
