@@ -61,14 +61,16 @@ const PlanificacionManager = () => {
     localStorage.setItem('planificacion_v1', JSON.stringify(nuevaPlanificacion));
   };
 
-  // Autocompleta la guardia alternando entre las guardias del paso,
-  // solo para los días que todavía no tengan nada cargado — no pisa
-  // lo que ya esté corregido a mano.
+  const [guardiaImpar, setGuardiaImpar] = useState('');
+  const [guardiaPar, setGuardiaPar] = useState('');
+
+  // Autocompleta la guardia según la paridad elegida (impar/par), solo
+  // para los días que todavía no tengan nada cargado — no pisa lo que
+  // ya esté corregido a mano.
   const generarMes = () => {
     if (!pasoActual) return;
-    const guardias = pasoActual.guardias || [];
-    if (guardias.length === 0) {
-      alert('Este paso no tiene guardias configuradas en la plantilla.');
+    if (!guardiaImpar || !guardiaPar) {
+      alert('Elegí qué guardia corresponde a días impares y cuál a días pares.');
       return;
     }
     const dias = diasEnMes(year, month);
@@ -76,7 +78,7 @@ const PlanificacionManager = () => {
     for (let dia = 1; dia <= dias; dia++) {
       const fecha = fechaISO(year, month, dia);
       if (!nuevoPlanPaso[fecha]) {
-        nuevoPlanPaso[fecha] = { guardia: guardias[(dia - 1) % guardias.length], turnos: {} };
+        nuevoPlanPaso[fecha] = { guardia: dia % 2 === 1 ? guardiaImpar : guardiaPar, turnos: {} };
       }
     }
     guardarPlanificacion({ ...planificacion, [pasoActual.id]: nuevoPlanPaso });
@@ -125,8 +127,22 @@ const PlanificacionManager = () => {
           ))}
         </select>
         <input type="month" value={anioMes} onChange={(e) => setAnioMes(e.target.value)} className="border p-2" />
+        <span className="text-sm text-gray-500">Impar:</span>
+        <select value={guardiaImpar} onChange={(e) => setGuardiaImpar(e.target.value)} className="border p-1">
+          <option value="">...</option>
+          {(pasoActual.guardias || []).map((g) => (
+            <option key={g} value={g}>{g}</option>
+          ))}
+        </select>
+        <span className="text-sm text-gray-500">Par:</span>
+        <select value={guardiaPar} onChange={(e) => setGuardiaPar(e.target.value)} className="border p-1">
+          <option value="">...</option>
+          {(pasoActual.guardias || []).map((g) => (
+            <option key={g} value={g}>{g}</option>
+          ))}
+        </select>
         <button onClick={generarMes} className="bg-blue-500 text-white p-2 rounded flex items-center shadow hover:scale-105 transition-transform">
-          <Wand2 size={16} className="mr-2" /> Generar mes (autocompleta guardia)
+          <Wand2 size={16} className="mr-2" /> Generar mes
         </button>
       </div>
 
