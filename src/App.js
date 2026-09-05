@@ -5,6 +5,7 @@ import EstadisticasCasillas from './EstadisticasCasillas';
 import PasoManager from './PasoManager';
 import AgentesManager from './AgentesManager';
 import PlanificacionManager from './PlanificacionManager';
+import { generarAsignacion } from './motorAsignacion';
 
 const colors = [
   'bg-red-500', 'bg-blue-500', 'bg-green-500', 'bg-yellow-500', 'bg-purple-500',
@@ -147,6 +148,14 @@ const HorarioEditable = () => {
   const [mostrarCambio, setMostrarCambio] = useState(false);
   const [cambioEntraId, setCambioEntraId] = useState('');
   const [cambioSaleId, setCambioSaleId] = useState('');
+
+  const [mostrarDistribucion, setMostrarDistribucion] = useState(false);
+  const [distCasillas, setDistCasillas] = useState(new Set());
+  const [distHoraInicio, setDistHoraInicio] = useState(0);
+  const [distHoraFin, setDistHoraFin] = useState(1);
+  const [distPermanenciaMax, setDistPermanenciaMax] = useState(2);
+  const [distIntervaloMin, setDistIntervaloMin] = useState(1);
+  const [distResultado, setDistResultado] = useState(null);
 
   const [snapshotConsulta, setSnapshotConsulta] = useState(null);
   const [modoEdicionConsulta, setModoEdicionConsulta] = useState(false);
@@ -988,6 +997,66 @@ const HorarioEditable = () => {
     });
   };
 
+  // =========================================================
+  // DISTRIBUCIÓN AUTOMÁTICA (motorAsignacion.js)
+  // =========================================================
+
+  const toggleDistCasilla = (filaIdx) => {
+    const copia = new Set(distCasillas);
+    if (copia.has(filaIdx)) copia.delete(filaIdx);
+    else copia.add(filaIdx);
+    setDistCasillas(copia);
+  };
+
+  const calcularDistribucion = () => {
+    if (distCasillas.size === 0) {
+      alert('Elegí al menos una casilla para abrir.');
+      return;
+    }
+    const horasVentana = construirHorasTurno(distHoraInicio, distHoraFin);
+
+    // Solo se ofrecen al motor las horas realmente libres — nunca pisa
+    // algo que ya esté cargado a mano o por otra vía.
+    const casillasAbiertas = [...distCasillas].map((filaIdx) => ({
+      filaIdx,
+      horas: horasVentana.filter((h) => matrizActual[filaIdx]?.[h] == null),
+    }));
+
+    const poolAgentes = activosPresentes
+      .filter((x) => x.registro.vistaAsignadaHoy === selectedVistaId && x.registro.turnoPrincipal === selectedTurnoId)
+      .map((x) => x.id);
+
+    if (poolAgentes.length === 0) {
+      alert('No hay agentes disponibles en esta vista/turno para distribuir.');
+      return;
+    }
+
+    const resultado = generarAsignacion({
+      agentesIds: poolAgentes,
+      casillasAbiertas,
+      ordenHoras: horasVentana,
+      permanenciaMaxima: distPermanenciaMax,
+      intervaloMinimo: distIntervaloMin,
+      filas: vistaActual.casillas.length,
+    });
+
+    setDistResultado(resultado);
+  };
+
+  const aplicarDistribucion = () => {
+    if (!distResultado) return;
+    const nuevaMatriz = matrizActual.map((row) => [...row]);
+    distResultado.matriz.forEach((fila, filaIdx) => {
+      fila.forEach((agenteId, h) => {
+        if (agenteId) nuevaMatriz[filaIdx][h] = agenteId;
+      });
+    });
+    setMatrizActual(nuevaMatriz);
+    setMostrarDistribucion(false);
+    setDistResultado(null);
+    setDistCasillas(new Set());
+  };
+
   const ordenarAgentesPorEquipo = () => {
     if (!pasoActual) return [];
     let listado = activosPresentes.filter(
@@ -1250,6 +1319,102 @@ const HorarioEditable = () => {
         </div>
       )}
 
+      {mostrarDistribucion && (
+        <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center overflow-y-auto py-8">
+          <div className="bg-white p-4 rounded w-full max-w-lg">
+            <h3 className="font-semibold mb-2">Distribución automática</h3>
+            <p className="text-xs text-gray-500 mb-3">
+              Reparte agentes de esta vista/turno en las casillas y horario que elijas. Solo llena horas libres — no
+              pisa nada ya cargado. El resultado puede no salir perfectamente parejo (son topes, no valores fijos).
+            </p>
+
+            <label className="block text-sm font-semibold mb-1">Casillas a abrir</label>
+            <div className="flex flex-wrap gap-2 mb-3 max-h-28 overflow-y-auto border rounded p-2">
+              {vistaActual.casillas.map((c, filaIdx) => (
+                <label key={c.id} className="text-sm flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={distCasillas.has(filaIdx)}
+                    onChange={() => toggleDistCasilla(filaIdx)}
+                  />
+                  {c.nombre}
+                </label>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-2 mb-3">
+              <label className="text-sm">Horario:</label>
+              <select value={distHoraInicio} onChange={(e) => setDistHoraInicio(Number(e.target.value))} className="border p-1">
+                {Array.from({ length: 24 }, (_, h) => (
+                  <option key={h} value={h}>{etiquetaHora(h)}</option>
+                ))}
+              </select>
+              <span>a</span>
+              <select value={distHoraFin} onChange={(e) => setDistHoraFin(Number(e.target.value))} className="border p-1">
+                {Array.from({ length: 24 }, (_, h) => (
+                  <option key={h} value={h}>{etiquetaHora(h)}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex items-center gap-2 mb-3">
+              <label className="text-sm">Permanencia máxima (hs):</label>
+              <input
+                type="number"
+                min="1"
+                value={distPermanenciaMax}
+                onChange={(e) => setDistPermanenciaMax(Math.max(1, Number(e.target.value)))}
+                className="border p-1 w-16"
+              />
+              <label className="text-sm">Intervalo mínimo (hs):</label>
+              <input
+                type="number"
+                min="0"
+                value={distIntervaloMin}
+                onChange={(e) => setDistIntervaloMin(Math.max(0, Number(e.target.value)))}
+                className="border p-1 w-16"
+              />
+            </div>
+
+            <button onClick={calcularDistribucion} className="bg-indigo-600 text-white p-2 rounded w-full mb-3">
+              Calcular
+            </button>
+
+            {distResultado && (
+              <div className="bg-gray-50 border rounded p-2 mb-3 text-sm max-h-40 overflow-y-auto">
+                {distResultado.resumen.map((r) => (
+                  <div key={r.agenteId}>
+                    {nombreCompleto(identidadPorId(r.agenteId))}: {r.horasAsignadas} h
+                  </div>
+                ))}
+                {distResultado.horasSinCubrir > 0 && (
+                  <div className="text-red-600 mt-1">
+                    ⚠ {distResultado.horasSinCubrir} hora(s) quedaron sin nadie disponible.
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              {distResultado && (
+                <button onClick={aplicarDistribucion} className="bg-green-600 text-white p-2 rounded flex-1">
+                  Aplicar a la grilla
+                </button>
+              )}
+              <button
+                onClick={() => {
+                  setMostrarDistribucion(false);
+                  setDistResultado(null);
+                }}
+                className="bg-gray-300 p-2 rounded flex-1"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {conflictoModal.show && (
         <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">
           <div className="bg-white p-4 rounded w-96">
@@ -1375,6 +1540,9 @@ const HorarioEditable = () => {
             </button>
             <button onClick={() => setMostrarCambio(true)} className="bg-orange-600 text-white p-2 rounded shadow hover:scale-105 transition-transform">
               Cambio por planilla
+            </button>
+            <button onClick={() => setMostrarDistribucion(true)} className="bg-indigo-600 text-white p-2 rounded shadow hover:scale-105 transition-transform">
+              Distribución automática
             </button>
 
             <div className="flex items-center gap-1 bg-gray-100 border border-gray-300 rounded p-1">
