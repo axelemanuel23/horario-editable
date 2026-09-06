@@ -165,6 +165,8 @@ const HorarioEditable = () => {
   const [distPermanenciaMax, setDistPermanenciaMax] = useState(2);
   const [distIntervaloMin, setDistIntervaloMin] = useState(1);
   const [distResultado, setDistResultado] = useState(null);
+  const [distRachaMinima, setDistRachaMinima] = useState(1);
+  const [distHorasMaximas, setDistHorasMaximas] = useState(8);
 
   const [snapshotConsulta, setSnapshotConsulta] = useState(null);
   const [modoEdicionConsulta, setModoEdicionConsulta] = useState(false);
@@ -950,40 +952,55 @@ const confirmarAccionConflicto = () => {
   };
 
   const calcularDistribucion = () => {
-    if (distCasillas.size === 0) {
-      alert('Elegí al menos una casilla para abrir.');
-      return;
-    }
-    const horasVentana = construirHorasTurno(distHoraInicio, distHoraFin);
+  if (distCasillas.size === 0) {
+    alert('Elegí al menos una casilla para abrir.');
+    return;
+  }
+  const horasVentana = construirHorasTurno(distHoraInicio, distHoraFin);
 
-    // Solo se ofrecen al motor las horas realmente libres — nunca pisa
-    // algo que ya esté cargado a mano o por otra vía.
-    const casillasAbiertas = [...distCasillas].map((filaIdx) => ({
-      filaIdx,
-      horas: horasVentana.filter((h) => matrizActual[filaIdx]?.[h] == null),
-    }));
+  const casillasAbiertas = [...distCasillas].map((filaIdx) => ({
+    filaIdx,
+    horas: horasVentana.filter((h) => matrizActual[filaIdx]?.[h] == null),
+  }));
 
-    const poolAgentes = activosPresentes
-      .filter((x) => x.registro.vistaAsignadaHoy === selectedVistaId && x.registro.turnoPrincipal === selectedTurnoId)
-      .map((x) => x.id);
+  const poolAgentes = activosPresentes
+    .filter((x) => x.registro.vistaAsignadaHoy === selectedVistaId && x.registro.turnoPrincipal === selectedTurnoId)
+    .map((x) => x.id);
 
-    if (poolAgentes.length === 0) {
-      alert('No hay agentes disponibles en esta vista/turno para distribuir.');
-      return;
-    }
+  if (poolAgentes.length === 0) {
+    alert('No hay agentes disponibles en esta vista/turno para distribuir.');
+    return;
+  }
 
-    const resultado = generarAsignacion({
-  agentesIds: poolAgentes,
-  casillasAbiertas,
-  ordenHoras: horasVentana,
-  permanenciaMaxima: distPermanenciaMax,
-  intervaloMinimo: distIntervaloMin,
-  filas: vistaActual.casillas.length,
-  matrizActual,   // <-- nuevo: para que el motor vea lo ya asignado
-});
+  // Horas ya ocupadas por cada agente en CUALQUIER vista del paso —
+  // necesario para que descanso mínimo y horas máximas sean globales,
+  // no solo de la vista que se está autocompletando.
+  const horasOcupadasPorAgente = {};
+  poolAgentes.forEach((id) => {
+    const horas = new Set();
+    pasoActual.vistas.forEach((vista) => {
+      const m = matrices[matrizKey(pasoActual.id, vista.id)];
+      if (!m) return;
+      m.forEach((fila) => fila.forEach((celda, h) => { if (celda === id) horas.add(h); }));
+    });
+    horasOcupadasPorAgente[id] = [...horas];
+  });
 
-    setDistResultado(resultado);
-  };
+  const resultado = generarAsignacion({
+    agentesIds: poolAgentes,
+    casillasAbiertas,
+    ordenHoras: horasVentana,
+    permanenciaMaxima: distPermanenciaMax,
+    intervaloMinimo: distIntervaloMin,
+    rachaMinima: distRachaMinima,
+    horasMaximas: distHorasMaximas,
+    filas: vistaActual.casillas.length,
+    matrizActual,
+    horasOcupadasPorAgente,
+  });
+
+  setDistResultado(resultado);
+};
 
   const aplicarDistribucion = () => {
     if (!distResultado) return;
@@ -1316,6 +1333,22 @@ const confirmarAccionConflicto = () => {
                 onChange={(e) => setDistIntervaloMin(Math.max(0, Number(e.target.value)))}
                 className="border p-1 w-16"
               />
+                  <label className="text-sm">Racha mínima (hs):</label>
+<input
+  type="number"
+  min="1"
+  value={distRachaMinima}
+  onChange={(e) => setDistRachaMinima(Math.max(1, Number(e.target.value)))}
+  className="border p-1 w-16"
+/>
+<label className="text-sm">Horas máximas (hs):</label>
+<input
+  type="number"
+  min="1"
+  value={distHorasMaximas}
+  onChange={(e) => setDistHorasMaximas(Math.max(1, Number(e.target.value)))}
+  className="border p-1 w-16"
+/>
             </div>
 
             <button onClick={calcularDistribucion} className="bg-indigo-600 text-white p-2 rounded w-full mb-3">
