@@ -1385,7 +1385,7 @@ const confirmarAccionConflicto = () => {
         </div>
       )}
 
-      {{conflictoModal.show && (
+      {conflictoModal.show && (
   <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">
     <div className="bg-white p-4 rounded w-96">
       {conflictoModal.tipo === 'conflictoEntrante' && (
