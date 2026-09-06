@@ -18,13 +18,15 @@ export function matrizKey(pasoId, vistaId) {
 // Busca en qué vista/fila está agenteId asignado en columnaAbsoluta,
 // excluyendo opcionalmente una vista+fila puntual (para no matchear
 // contra la propia celda de origen del agente que se está moviendo).
-export function buscarConflicto(matrices, pasoActual, columnaAbsoluta, agenteId, vistaExcluida, filaExcluida) {
+export function buscarConflicto(matrices, pasoActual, columnaAbsoluta, agenteId, vistaExcluida, filaExcluida, columnaExcluida) {
   if (!pasoActual) return null;
   for (const vista of pasoActual.vistas) {
     const matriz = matrices[matrizKey(pasoActual.id, vista.id)];
     if (!matriz) continue;
     for (let filaIdx = 0; filaIdx < matriz.length; filaIdx++) {
-      if (vista.id === vistaExcluida && filaIdx === filaExcluida) continue;
+      const esCeldaExcluida =
+        vista.id === vistaExcluida && filaIdx === filaExcluida && columnaAbsoluta === columnaExcluida;
+      if (esCeldaExcluida) continue;
       if (matriz[filaIdx][columnaAbsoluta] === agenteId) {
         return { vistaId: vista.id, vistaNombre: vista.nombre, filaIdx, casillaNombre: vista.casillas[filaIdx]?.nombre };
       }
@@ -80,8 +82,10 @@ export function diagnosticarDrop({
 
   // A: ¿el agente que arrastro ya está en otra casilla/vista a esta hora?
   const conflictoEntrante = buscarConflicto(
-    matrices, pasoActual, columnaDestino, agenteId, vistaExcluida, filaExcluida
-  );
+  matrices, pasoActual, columnaDestino, agenteId,
+  vistaExcluida, filaExcluida,
+  esOrigenMatriz ? origen.columna : null   // <-- nuevo
+);
 
   const ocupanteEnCelda = matrizActual[filaDestino]?.[columnaDestino] || null;
   const hayOcupante = !!ocupanteEnCelda && ocupanteEnCelda !== agenteId;
@@ -104,9 +108,12 @@ export function diagnosticarDrop({
   if (esIntercambio) {
     // ¿El desplazado ya está en otro lado a la hora de origen (adonde
     // iría a parar tras el intercambio)?
-    conflictoDesplazado = buscarConflicto(
-      matrices, pasoActual, origen.columna, ocupanteEnCelda, vistaActual.id, filaDestino
-    );
+    // conflictoDesplazado
+conflictoDesplazado = buscarConflicto(
+  matrices, pasoActual, origen.columna, ocupanteEnCelda,
+  vistaActual.id, filaDestino,
+  columnaDestino
+);
     if (!conflictoDesplazado) {
       horasConsecutivasDesplazado = verificarHorasConsecutivas(matrizActual, origen.columna, ocupanteEnCelda);
     }
