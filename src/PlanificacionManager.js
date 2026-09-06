@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Wand2 } from 'lucide-react';
+import { ArrowLeft, Wand2, ChevronDown, ChevronUp } from 'lucide-react';
 
 // =========================================================
 // PLANIFICACIÓN DÍA A DÍA
@@ -12,6 +12,13 @@ import { ArrowLeft, Wand2 } from 'lucide-react';
 // cualquier fecha sin afectar la jornada en curso. Los cambios de
 // último momento del día de hoy siguen pasando por Refuerzo/Cambio/
 // Retirar en HorarioEditable, no acá.
+//
+// Asignación de turno por día: en vez de un <select> por agente, cada
+// turno es un botón con un panel desplegable de checkboxes (uno por
+// agente de la guardia de ese día). Tildar a alguien en un turno lo
+// destilda automáticamente de cualquier otro turno que tuviera ese
+// mismo día (exclusividad: un agente, un turno por día). Solo un
+// panel puede estar abierto a la vez, en cualquier día del mes.
 // =========================================================
 
 function diasEnMes(year, month) {
@@ -90,11 +97,31 @@ const PlanificacionManager = () => {
     guardarPlanificacion({ ...planificacion, [pasoActual.id]: nuevoPlanPaso });
   };
 
-  const actualizarTurnoDia = (fecha, agenteId, turnoId) => {
+  // Tilda/destilda a un agente en un turno de un día puntual. Tildar
+  // pisa cualquier turno anterior que tuviera ese día (exclusividad).
+  const toggleAgenteEnTurno = (fecha, agenteId, turnoId) => {
     const nuevoPlanPaso = { ...planPaso };
     const diaActual = nuevoPlanPaso[fecha] || { guardia: '', turnos: {} };
-    nuevoPlanPaso[fecha] = { ...diaActual, turnos: { ...diaActual.turnos, [agenteId]: turnoId } };
+    const turnoActualDelAgente = diaActual.turnos[agenteId];
+    const nuevosTurnos = { ...diaActual.turnos };
+
+    if (turnoActualDelAgente === turnoId) {
+      delete nuevosTurnos[agenteId];
+    } else {
+      nuevosTurnos[agenteId] = turnoId;
+    }
+
+    nuevoPlanPaso[fecha] = { ...diaActual, turnos: nuevosTurnos };
     guardarPlanificacion({ ...planificacion, [pasoActual.id]: nuevoPlanPaso });
+  };
+
+  // Un solo panel abierto a la vez, en cualquier día del mes.
+  const [panelAbierto, setPanelAbierto] = useState(null); // { fecha, turnoId } | null
+
+  const toggleadorPanel = (fecha, turnoId) => {
+    setPanelAbierto((actual) =>
+      actual && actual.fecha === fecha && actual.turnoId === turnoId ? null : { fecha, turnoId }
+    );
   };
 
   const fechaHoyISO = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}-${String(hoy.getDate()).padStart(2, '0')}`;
@@ -173,24 +200,60 @@ const PlanificacionManager = () => {
               </div>
 
               {diaPlan.guardia && (
-                <div className="flex flex-wrap gap-2 pl-2">
-                  {agentesDelDia.map((a) => (
-                    <div key={a.id} className="flex items-center gap-1 text-sm">
-                      <span>{a.apellido}, {a.nombre}</span>
-                      <select
-                        value={diaPlan.turnos[a.id] || ''}
-                        onChange={(e) => actualizarTurnoDia(fecha, a.id, e.target.value)}
-                        className="border p-1 text-sm"
-                      >
-                        <option value="">Turno...</option>
-                        {pasoActual.turnos.map((t) => (
-                          <option key={t.id} value={t.id}>{t.nombre}</option>
-                        ))}
-                      </select>
-                    </div>
-                  ))}
-                  {agentesDelDia.length === 0 && (
+                <div className="pl-2">
+                  {agentesDelDia.length === 0 ? (
                     <span className="text-xs text-gray-400">No hay agentes cargados para la guardia {diaPlan.guardia}.</span>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      {pasoActual.turnos.map((t) => {
+                        const cantidad = agentesDelDia.filter((a) => diaPlan.turnos[a.id] === t.id).length;
+                        const abierto = panelAbierto?.fecha === fecha && panelAbierto?.turnoId === t.id;
+                        return (
+                          <div key={t.id} className="flex flex-col">
+                            <button
+                              onClick={() => toggleadorPanel(fecha, t.id)}
+                              className={`text-sm px-2 py-1 rounded flex items-center gap-1 border ${
+                                abierto ? 'bg-blue-500 text-white border-blue-500' : 'bg-gray-100 border-gray-300 hover:bg-gray-200'
+                              }`}
+                            >
+                              {t.nombre} ({cantidad})
+                              {abierto ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                            </button>
+
+                            {abierto && (
+                              <div className="mt-1 border rounded p-2 bg-gray-50 max-h-48 overflow-y-auto w-56">
+                                {agentesDelDia.map((a) => {
+                                  const turnoDelAgente = diaPlan.turnos[a.id];
+                                  const tildado = turnoDelAgente === t.id;
+                                  const enOtroTurno = turnoDelAgente && !tildado;
+                                  const nombreOtroTurno = enOtroTurno
+                                    ? pasoActual.turnos.find((x) => x.id === turnoDelAgente)?.nombre
+                                    : null;
+                                  return (
+                                    <label
+                                      key={a.id}
+                                      className={`flex items-center gap-2 text-sm py-0.5 ${
+                                        enOtroTurno ? 'text-gray-400' : 'text-gray-800'
+                                      }`}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={tildado}
+                                        onChange={() => toggleAgenteEnTurno(fecha, a.id, t.id)}
+                                      />
+                                      <span>{a.apellido}, {a.nombre}</span>
+                                      {enOtroTurno && (
+                                        <span className="text-xs italic">(hoy: {nombreOtroTurno})</span>
+                                      )}
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
                   )}
                 </div>
               )}
