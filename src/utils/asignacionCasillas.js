@@ -145,10 +145,19 @@ export function resolverTipoModal(diagnostico) {
 // Calcula las matrices nuevas para el tipo de resolución elegido.
 // No aplica 'bloqueoIntercambio' ni cancelaciones: esos casos se
 // resuelven en el componente simplemente cerrando el modal.
+export function crearMatrizVacia(filas) {
+  return Array(filas).fill().map(() => Array(HORAS_DIA).fill(null));
+}
 export function aplicarResolucion(tipo, diagnostico, params) {
   const { matrices, pasoActual, vistaActual, agenteId, filaDestino, columnaDestino, origen } = params;
   const key = matrizKey(pasoActual.id, vistaActual.id);
-  const matrizActual = (matrices[key] || []).map((row) => [...row]);
+  const filasNecesarias = vistaActual.casillas.length;
+  const guardada = matrices[key];
+  const matrizActual = guardada
+    ? (guardada.length >= filasNecesarias
+        ? guardada.map((row) => [...row])
+        : [...guardada.map((row) => [...row]), ...crearMatrizVacia(filasNecesarias - guardada.length)])
+    : crearMatrizVacia(filasNecesarias);
 
   const limpiarOrigenSiCorresponde = () => {
     if (!origen.panel) {
