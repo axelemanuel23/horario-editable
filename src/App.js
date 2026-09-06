@@ -807,20 +807,20 @@ const confirmarAccionConflicto = () => {
     }
 
     if (
-  matrizEncontrada[filaEncontrada][siguiente] !== null ||
-  buscarConflicto(matrices, pasoActual, siguiente, agenteId, null, null)
-) {
+      matrizEncontrada[filaEncontrada][siguiente] !== null ||
+      buscarConflicto(matrices, pasoActual, siguiente, agenteId, null, null)
+    ) {
+        const aplicar = () => {
+          const nuevaMatriz = matrizEncontrada.map((row) => [...row]);
+          nuevaMatriz[filaEncontrada][siguiente] = agenteId;
+          setMatrices({ ...matrices, [matrizKey(pasoActual.id, vistaEncontrada.id)]: nuevaMatriz });
+        };
 
-    const aplicar = () => {
-      const nuevaMatriz = matrizEncontrada.map((row) => [...row]);
-      nuevaMatriz[filaEncontrada][siguiente] = agenteId;
-      setMatrices({ ...matrices, [matrizKey(pasoActual.id, vistaEncontrada.id)]: nuevaMatriz });
-    };
-
-    if (verificarHorasConsecutivas(matrizEncontrada, siguiente, agenteId)) {
-      setConfirmationModal({ show: true, action: aplicar });
-    } else {
-      aplicar();
+        if (verificarHorasConsecutivas(matrizEncontrada, siguiente, agenteId)) {
+          setConfirmationModal({ show: true, action: aplicar });
+        } else {
+          aplicar();
+        }
     }
   };
 
