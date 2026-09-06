@@ -193,7 +193,14 @@ export function aplicarResolucion(tipo, diagnostico, params) {
         // para no pisarla después al escribir nuevasMatrices[key].
         if (matrizActual[conflicto.filaIdx]) matrizActual[conflicto.filaIdx][columnaDestino] = null;
       } else {
-        const matrizConflicto = (nuevasMatrices[keyConflicto] || []).map((row) => [...row]);
+        const vistaConflicto = pasoActual.vistas.find((v) => v.id === conflicto.vistaId);
+const filasNecesariasConflicto = vistaConflicto.casillas.length;
+const guardadaConflicto = nuevasMatrices[keyConflicto];
+const matrizConflicto = guardadaConflicto
+  ? (guardadaConflicto.length >= filasNecesariasConflicto
+      ? guardadaConflicto.map((row) => [...row])
+      : [...guardadaConflicto.map((row) => [...row]), ...crearMatrizVacia(filasNecesariasConflicto - guardadaConflicto.length)])
+  : crearMatrizVacia(filasNecesariasConflicto);
         if (matrizConflicto[conflicto.filaIdx]) matrizConflicto[conflicto.filaIdx][columnaDestino] = null;
         nuevasMatrices[keyConflicto] = matrizConflicto;
       }
