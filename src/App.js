@@ -828,36 +828,7 @@ const confirmarAccionConflicto = () => {
   // PRÉSTAMO ENTRE VISTAS (conflicto de doble asignación)
   // =========================================================
 
-  const resolverConflictoCancelar = () => setConflictoModal({ show: false });
-
-  const resolverConflictoReasignar = () => {
-    const { agenteId, filaDestino, columnaDestino, conflicto } = conflictoModal;
-
-    const aplicar = () => {
-      const nuevasMatrices = { ...matrices };
-      const keyOrigen = matrizKey(pasoActual.id, conflicto.vistaId);
-      const matrizOrigen = (nuevasMatrices[keyOrigen] || []).map((row) => [...row]);
-      if (matrizOrigen[conflicto.filaIdx]) matrizOrigen[conflicto.filaIdx][columnaDestino] = null;
-      nuevasMatrices[keyOrigen] = matrizOrigen;
-
-      const keyDestino = matrizKey(pasoActual.id, vistaActual.id);
-      const matrizDestino = matrizActual.map((row) => [...row]);
-      matrizDestino[filaDestino][columnaDestino] = agenteId;
-      nuevasMatrices[keyDestino] = matrizDestino;
-
-      setMatrices(nuevasMatrices);
-    };
-
-    setConflictoModal({ show: false });
-
-    if (verificarHorasConsecutivas(matrizActual, columnaDestino, agenteId)) {
-      setConfirmationModal({ show: true, action: aplicar });
-    } else {
-      aplicar();
-    }
-  };
-
-  const toggleOtrasVistas = (equipo) => {
+   const toggleOtrasVistas = (equipo) => {
     const copia = new Set(otrasVistasAbiertas);
     if (copia.has(equipo)) copia.delete(equipo);
     else copia.add(equipo);
