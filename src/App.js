@@ -1498,7 +1498,7 @@ const confirmarAccionConflicto = () => {
       )}
     </div>
   </div>
-)}}
+)}
 
       {modalCierrePendientes && (
         <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">
