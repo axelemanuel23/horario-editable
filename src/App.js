@@ -6,6 +6,14 @@ import PasoManager from './PasoManager';
 import AgentesManager from './AgentesManager';
 import PlanificacionManager from './PlanificacionManager';
 import { generarAsignacion } from './motorAsignacion';
+import {
+  matrizKey,
+  buscarConflicto,
+  verificarHorasConsecutivas,
+  diagnosticarDrop,
+  resolverTipoModal,
+  aplicarResolucion,
+} from './utils/asignacionCasillas';
 
 const colors = [
   'bg-red-500', 'bg-blue-500', 'bg-green-500', 'bg-yellow-500', 'bg-purple-500',
@@ -16,10 +24,6 @@ const HORAS_DIA = 24;
 
 function crearMatrizVacia(filas) {
   return Array(filas).fill().map(() => Array(HORAS_DIA).fill(null));
-}
-
-function matrizKey(pasoId, vistaId) {
-  return `${pasoId}:${vistaId}`;
 }
 
 function construirHorasTurno(horaInicio, horaFin) {
@@ -134,7 +138,12 @@ const HorarioEditable = () => {
 
   const [tick, setTick] = useState(0);
   const [confirmationModal, setConfirmationModal] = useState({ show: false, action: null });
-  const [conflictoModal, setConflictoModal] = useState({ show: false });
+  const [conflictoModal, setConflictoModal] = useState({
+  show: false,
+  tipo: null,
+  diagnostico: null,
+  dropParams: null,
+});
   const [modalCierrePendientes, setModalCierrePendientes] = useState(false);
   const [otrasVistasAbiertas, setOtrasVistasAbiertas] = useState(new Set());
   const [selectedHorarioCasilla, setSelectedHorarioCasilla] = useState(null);
@@ -690,58 +699,10 @@ const HorarioEditable = () => {
   // =========================================================
   // ASIGNACIÓN (DRAG & DROP EN LA GRILLA)
   // =========================================================
-
-  const agenteYaEnColumna = (columnaAbsoluta, agenteId, vistaExcluida, filaExcluida) => {
-    if (!pasoActual) return false;
-    return pasoActual.vistas.some((vista) => {
-      const matriz = matrices[matrizKey(pasoActual.id, vista.id)];
-      if (!matriz) return false;
-      return matriz.some(
-        (row, idx) => !(vista.id === vistaExcluida && idx === filaExcluida) && row[columnaAbsoluta] === agenteId
-      );
-    });
-  };
-
+ 
   // Ubica EXACTAMENTE dónde (qué vista, qué fila) está ya asignado un
   // agente en una hora dada, para poder ofrecer "reasignar" en vez de
   // solo bloquear — necesario para el préstamo entre sectores.
-  const buscarConflicto = (columnaAbsoluta, agenteId, vistaExcluida, filaExcluida) => {
-    if (!pasoActual) return null;
-    for (const vista of pasoActual.vistas) {
-      const matriz = matrices[matrizKey(pasoActual.id, vista.id)];
-      if (!matriz) continue;
-      for (let filaIdx = 0; filaIdx < matriz.length; filaIdx++) {
-        if (vista.id === vistaExcluida && filaIdx === filaExcluida) continue;
-        if (matriz[filaIdx][columnaAbsoluta] === agenteId) {
-          return { vistaId: vista.id, vistaNombre: vista.nombre, filaIdx, casillaNombre: vista.casillas[filaIdx]?.nombre };
-        }
-      }
-    }
-    return null;
-  };
-
-  const verificarHorasConsecutivas = (matriz, columnaAbsoluta, agenteId) => {
-    let horasConsecutivas = 1;
-    let i = (columnaAbsoluta + HORAS_DIA - 1) % HORAS_DIA;
-    let pasosCount = 0;
-    while (pasosCount < HORAS_DIA - 1) {
-      const columnaChequeada = i;
-      if (!matriz.some((row) => row[columnaChequeada] === agenteId)) break;
-      horasConsecutivas++;
-      i = (i + HORAS_DIA - 1) % HORAS_DIA;
-      pasosCount++;
-    }
-    i = (columnaAbsoluta + 1) % HORAS_DIA;
-    pasosCount = 0;
-    while (pasosCount < HORAS_DIA - 1) {
-      const columnaChequeada = i;
-      if (!matriz.some((row) => row[columnaChequeada] === agenteId)) break;
-      horasConsecutivas++;
-      i = (i + 1) % HORAS_DIA;
-      pasosCount++;
-    }
-    return horasConsecutivas >= 3;
-  };
 
   const manejarDragStart = (e, agenteId, fila, columna) => {
     e.dataTransfer.setData('text/plain', JSON.stringify({ agenteId, fila, columna }));
@@ -750,56 +711,65 @@ const HorarioEditable = () => {
   const manejarDragOver = (e) => e.preventDefault();
 
   const manejarDrop = (e, fila, columnaPantalla) => {
-    e.preventDefault();
-    const { agenteId, fila: filaOrigen, columna: columnaOrigenPantalla } = JSON.parse(e.dataTransfer.getData('text'));
-    const columna = horasTurno[columnaPantalla];
-    const nuevaMatriz = matrizActual.map((row) => [...row]);
+  e.preventDefault();
+  const { agenteId, fila: filaOrigenPantalla, columna: columnaOrigenPantalla } = JSON.parse(
+    e.dataTransfer.getData('text')
+  );
+  const columnaDestino = horasTurno[columnaPantalla];
 
-    if (filaOrigen !== undefined && columnaOrigenPantalla !== undefined) {
-      const columnaOrigen = horasTurno[columnaOrigenPantalla];
-      if (columna === columnaOrigen) {
-        nuevaMatriz[filaOrigen][columnaOrigen] = null;
-        nuevaMatriz[fila][columna] = agenteId;
-        setMatrizActual(nuevaMatriz);
-      } else if (!nuevaMatriz[fila][columna]) {
-        if (agenteYaEnColumna(columna, agenteId, vistaActual.id, filaOrigen)) {
-          alert('Ese agente ya está asignado en este horario.');
-          return;
-        }
-        const aplicar = () => {
-          nuevaMatriz[filaOrigen][columnaOrigen] = null;
-          nuevaMatriz[fila][columna] = agenteId;
-          setMatrizActual(nuevaMatriz);
-        };
-        if (verificarHorasConsecutivas(nuevaMatriz, columna, agenteId)) {
-          setConfirmationModal({ show: true, action: aplicar });
-        } else {
-          aplicar();
-        }
-      } else {
-        alert('Esa posición ya está ocupada por otro agente.');
-      }
-    } else {
-      if (nuevaMatriz[fila][columna]) {
-        alert('Esa posición ya está ocupada.');
-        return;
-      }
-      const conflicto = buscarConflicto(columna, agenteId, null, null);
-      if (conflicto) {
-        setConflictoModal({ show: true, agenteId, filaDestino: fila, columnaDestino: columna, conflicto });
-        return;
-      }
-      const aplicar = () => {
-        nuevaMatriz[fila][columna] = agenteId;
-        setMatrizActual(nuevaMatriz);
-      };
-      if (verificarHorasConsecutivas(nuevaMatriz, columna, agenteId)) {
-        setConfirmationModal({ show: true, action: aplicar });
-      } else {
-        aplicar();
-      }
-    }
-  };
+  // No-op: soltar sobre la misma celda de la que salió.
+  if (
+    filaOrigenPantalla !== undefined &&
+    columnaOrigenPantalla !== undefined &&
+    filaOrigenPantalla === fila &&
+    columnaOrigenPantalla === columnaPantalla
+  ) {
+    return;
+  }
+
+  const origen =
+    filaOrigenPantalla !== undefined && columnaOrigenPantalla !== undefined
+      ? { panel: false, fila: filaOrigenPantalla, columna: horasTurno[columnaOrigenPantalla] }
+      : { panel: true };
+
+  const diagnostico = diagnosticarDrop({
+    matrices,
+    pasoActual,
+    vistaActual,
+    matrizActual,
+    porAgente: operativoPaso.porAgente,
+    agenteId,
+    filaDestino: fila,
+    columnaDestino,
+    origen,
+  });
+
+  const dropParams = { agenteId, filaDestino: fila, columnaDestino, origen };
+  const tipoModal = resolverTipoModal(diagnostico);
+
+  if (!tipoModal) {
+    setMatrices(aplicarResolucion('directo', diagnostico, { matrices, pasoActual, vistaActual, ...dropParams }));
+    return;
+  }
+
+  setConflictoModal({ show: true, tipo: tipoModal, diagnostico, dropParams });
+};
+
+const cerrarConflictoModal = () =>
+  setConflictoModal({ show: false, tipo: null, diagnostico: null, dropParams: null });
+
+const confirmarAccionConflicto = () => {
+  const { tipo, diagnostico, dropParams } = conflictoModal;
+  const tipoAplicar = tipo === 'conflictoEntrante' ? 'conflictoReasignar' : tipo;
+  const nuevasMatrices = aplicarResolucion(tipoAplicar, diagnostico, {
+    matrices,
+    pasoActual,
+    vistaActual,
+    ...dropParams,
+  });
+  setMatrices(nuevasMatrices);
+  cerrarConflictoModal();
+};
 
   const manejarClickFicha = (fila, columnaPantalla) => {
     const columna = horasTurno[columnaPantalla];
@@ -836,10 +806,10 @@ const HorarioEditable = () => {
       pasosCount++;
     }
 
-    if (matrizEncontrada[filaEncontrada][siguiente] !== null || agenteYaEnColumna(siguiente, agenteId, null, null)) {
-      alert('La hora siguiente ya está ocupada.');
-      return;
-    }
+    if (
+  matrizEncontrada[filaEncontrada][siguiente] !== null ||
+  buscarConflicto(matrices, pasoActual, siguiente, agenteId, null, null)
+) {
 
     const aplicar = () => {
       const nuevaMatriz = matrizEncontrada.map((row) => [...row]);
@@ -1415,26 +1385,120 @@ const HorarioEditable = () => {
         </div>
       )}
 
-      {conflictoModal.show && (
-        <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">
-          <div className="bg-white p-4 rounded w-96">
-            <h3 className="font-semibold mb-2">Ya está asignado en otra vista</h3>
-            <p className="text-sm mb-4">
-              Este agente ya está en <strong>{conflictoModal.conflicto?.vistaNombre || 'otra vista'}</strong>
-              {' '}({conflictoModal.conflicto?.casillaNombre}) a las {etiquetaHora(conflictoModal.columnaDestino)}.
-              ¿Cancelar la asignación acá, o reasignarlo (sacarlo de ahí y traerlo a esta vista)?
-            </p>
-            <div className="flex gap-2">
-              <button onClick={resolverConflictoReasignar} className="bg-blue-500 text-white p-2 rounded flex-1">
-                Reasignar acá
-              </button>
-              <button onClick={resolverConflictoCancelar} className="bg-gray-300 p-2 rounded flex-1">
-                Cancelar
-              </button>
-            </div>
+      {{conflictoModal.show && (
+  <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">
+    <div className="bg-white p-4 rounded w-96">
+      {conflictoModal.tipo === 'conflictoEntrante' && (
+        <>
+          <h3 className="font-semibold mb-2">Ya está asignado en otra vista</h3>
+          <p className="text-sm mb-4">
+            Este agente ya está en <strong>{conflictoModal.diagnostico.conflictoEntrante.vistaNombre}</strong>
+            {' '}({conflictoModal.diagnostico.conflictoEntrante.casillaNombre}) a las{' '}
+            {etiquetaHora(conflictoModal.dropParams.columnaDestino)}.
+            ¿Cancelar la asignación acá, o reasignarlo (sacarlo de ahí y traerlo a esta vista)?
+          </p>
+          <div className="flex gap-2">
+            <button onClick={confirmarAccionConflicto} className="bg-blue-500 text-white p-2 rounded flex-1">
+              Reasignar acá
+            </button>
+            <button onClick={cerrarConflictoModal} className="bg-gray-300 p-2 rounded flex-1">
+              Cancelar
+            </button>
           </div>
-        </div>
+        </>
       )}
+
+      {conflictoModal.tipo === 'bloqueoIntercambio' && (
+        <>
+          <h3 className="font-semibold mb-2">No se puede intercambiar</h3>
+          <p className="text-sm mb-4">
+            {nombreCompleto(identidadPorId(conflictoModal.diagnostico.ocupanteId))} ya está asignado en{' '}
+            <strong>{conflictoModal.diagnostico.conflictoDesplazado.vistaNombre}</strong>
+            {' '}({conflictoModal.diagnostico.conflictoDesplazado.casillaNombre}) a las{' '}
+            {etiquetaHora(conflictoModal.dropParams.origen.columna)}. No se puede completar el intercambio.
+          </p>
+          <button onClick={cerrarConflictoModal} className="bg-gray-300 p-2 rounded w-full">
+            Entendido
+          </button>
+        </>
+      )}
+
+      {conflictoModal.tipo === 'avisoPrestamo' && (
+        <>
+          <h3 className="font-semibold mb-2">Esa casilla la ocupa un préstamo de otro sector</h3>
+          <p className="text-sm mb-4">
+            Se va a quitar a {nombreCompleto(identidadPorId(conflictoModal.diagnostico.ocupanteId))} de esa celda
+            para asignar al agente arrastrado.
+          </p>
+          <button onClick={confirmarAccionConflicto} className="bg-blue-500 text-white p-2 rounded w-full">
+            Entendido
+          </button>
+        </>
+      )}
+
+      {conflictoModal.tipo === 'confirmarReemplazo' && (
+        <>
+          <h3 className="font-semibold mb-2">La casilla ya está ocupada</h3>
+          <p className="text-sm mb-4">
+            Esa celda ya tiene a {nombreCompleto(identidadPorId(conflictoModal.diagnostico.ocupanteId))} asignado.
+            ¿Asignar igual? (se le quita esa hora al agente que estaba)
+            {conflictoModal.diagnostico.horasConsecutivasEntrante && (
+              <> Además, el agente que entra quedaría con 3 o más horas seguidas en casilla.</>
+            )}
+          </p>
+          <div className="flex gap-2">
+            <button onClick={confirmarAccionConflicto} className="bg-blue-500 text-white p-2 rounded flex-1">
+              Asignar igual
+            </button>
+            <button onClick={cerrarConflictoModal} className="bg-gray-300 p-2 rounded flex-1">
+              Cancelar
+            </button>
+          </div>
+        </>
+      )}
+
+      {conflictoModal.tipo === 'confirmarIntercambio' && (
+        <>
+          <h3 className="font-semibold mb-2">¿Intercambiar posiciones?</h3>
+          <p className="text-sm mb-4">
+            Esa celda ya tiene a {nombreCompleto(identidadPorId(conflictoModal.diagnostico.ocupanteId))} asignado.
+            Se va a intercambiar con el agente arrastrado.
+            {conflictoModal.diagnostico.horasConsecutivasEntrante && (
+              <> El agente que entra quedaría con 3 o más horas seguidas.</>
+            )}
+            {conflictoModal.diagnostico.horasConsecutivasDesplazado && (
+              <> El agente desplazado también quedaría con 3 o más horas seguidas en su nueva celda.</>
+            )}
+          </p>
+          <div className="flex gap-2">
+            <button onClick={confirmarAccionConflicto} className="bg-blue-500 text-white p-2 rounded flex-1">
+              Intercambiar
+            </button>
+            <button onClick={cerrarConflictoModal} className="bg-gray-300 p-2 rounded flex-1">
+              Cancelar
+            </button>
+          </div>
+        </>
+      )}
+
+      {conflictoModal.tipo === 'confirmarHorasConsecutivas' && (
+        <>
+          <p className="text-sm mb-4">
+            ¿Está seguro de que desea asignar una hora extra consecutiva a este agente?
+          </p>
+          <div className="flex gap-2">
+            <button onClick={confirmarAccionConflicto} className="bg-blue-500 text-white p-2 rounded flex-1">
+              Confirmar
+            </button>
+            <button onClick={cerrarConflictoModal} className="bg-gray-300 p-2 rounded flex-1">
+              Cancelar
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  </div>
+)}}
 
       {modalCierrePendientes && (
         <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">
