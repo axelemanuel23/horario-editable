@@ -973,13 +973,14 @@ const confirmarAccionConflicto = () => {
     }
 
     const resultado = generarAsignacion({
-      agentesIds: poolAgentes,
-      casillasAbiertas,
-      ordenHoras: horasVentana,
-      permanenciaMaxima: distPermanenciaMax,
-      intervaloMinimo: distIntervaloMin,
-      filas: vistaActual.casillas.length,
-    });
+  agentesIds: poolAgentes,
+  casillasAbiertas,
+  ordenHoras: horasVentana,
+  permanenciaMaxima: distPermanenciaMax,
+  intervaloMinimo: distIntervaloMin,
+  filas: vistaActual.casillas.length,
+  matrizActual,   // <-- nuevo: para que el motor vea lo ya asignado
+});
 
     setDistResultado(resultado);
   };
