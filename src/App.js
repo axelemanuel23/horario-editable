@@ -165,8 +165,6 @@ const HorarioEditable = () => {
   const [distPermanenciaMax, setDistPermanenciaMax] = useState(2);
   const [distIntervaloMin, setDistIntervaloMin] = useState(1);
   const [distResultado, setDistResultado] = useState(null);
-  const [distRachaMinima, setDistRachaMinima] = useState(1);
-  const [distHorasMaximas, setDistHorasMaximas] = useState(8);
 
   const [snapshotConsulta, setSnapshotConsulta] = useState(null);
   const [modoEdicionConsulta, setModoEdicionConsulta] = useState(false);
@@ -257,6 +255,10 @@ const HorarioEditable = () => {
 
   const identidadPorId = (id) => agentesIdentidad.find((a) => a.id === id);
   const nombreCompleto = (identidad) => (identidad ? `${identidad.nombre} ${identidad.apellido}` : '?');
+  // Apellido + inicial del nombre, para las tarjetas chicas de la grilla
+  // donde solo entra el apellido — desambigua homónimos (ej. "Gomez, B").
+  const etiquetaCorta = (identidad) =>
+    identidad ? `${identidad.apellido}, ${identidad.nombre.charAt(0).toUpperCase()}` : '';
 
   const matrizActual = useMemo(() => {
     if (!pasoActual || !vistaActual) return [];
@@ -385,15 +387,23 @@ const HorarioEditable = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matrices, pasoActual, tick]);
 
-  // nuevo, además del idsEnCasillaAhora existente (que queda igual)
-const idsEnCasillaVistaActual = useMemo(() => {
-  if (!pasoActual || !vistaActual) return new Set();
-  const matriz = matrices[matrizKey(pasoActual.id, vistaActual.id)];
-  const ids = new Set();
-  if (matriz) matriz.forEach((fila) => { if (fila[horaAbsolutaActual]) ids.add(fila[horaAbsolutaActual]); });
-  return ids;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [matrices, pasoActual, vistaActual, tick]);
+  // Igual que idsEnCasillaAhora pero acotado SOLO a la vista seleccionada
+  // — para el panel "Casilla", que debe mostrar únicamente a quien está
+  // en esta vista ahora mismo, no a préstamos sentados en otra vista.
+  // idsEnCasillaAhora (global) se mantiene intacto para excluir del
+  // panel de equipos a cualquiera ocupado en cualquier vista.
+  const idsEnCasillaVistaActual = useMemo(() => {
+    if (!pasoActual || !vistaActual) return new Set();
+    const matriz = matrices[matrizKey(pasoActual.id, vistaActual.id)];
+    const ids = new Set();
+    if (matriz) {
+      matriz.forEach((fila) => {
+        if (fila[horaAbsolutaActual]) ids.add(fila[horaAbsolutaActual]);
+      });
+    }
+    return ids;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matrices, pasoActual, vistaActual, tick]);
 
   const horasPorAgente = useMemo(() => {
     if (!pasoActual) return new Map();
@@ -883,10 +893,10 @@ const confirmarAccionConflicto = () => {
   const activosPresentes = activosInfo.filter((x) => !x.registro.ausente && !x.registro.retiradoHora);
 
   const pendientes = activosPresentes.filter((x) => {
-  if (!x.registro.turnoPrincipal) return true; // sin turno todavía: aparece en cualquier pestaña
-  if (x.registro.turnoPrincipal !== selectedTurnoId) return false; // es de otro turno, no se muestra acá
-  return !x.registro.equipo || (pasoActual.vistas.length > 1 && !x.registro.vistaPrincipal);
-});
+    if (!x.registro.turnoPrincipal) return true; // sin turno todavía: aparece en cualquier pestaña
+    if (x.registro.turnoPrincipal !== selectedTurnoId) return false; // es de otro turno, no se muestra acá
+    return !x.registro.equipo || (pasoActual && pasoActual.vistas.length > 1 && !x.registro.vistaPrincipal);
+  });
 
   const sinTurno = activosPresentes.filter((x) => !x.registro.turnoPrincipal).length;
   const sinEquipo = activosPresentes.filter((x) => x.registro.turnoPrincipal && !x.registro.equipo).length;
@@ -961,55 +971,39 @@ const confirmarAccionConflicto = () => {
   };
 
   const calcularDistribucion = () => {
-  if (distCasillas.size === 0) {
-    alert('Elegí al menos una casilla para abrir.');
-    return;
-  }
-  const horasVentana = construirHorasTurno(distHoraInicio, distHoraFin);
+    if (distCasillas.size === 0) {
+      alert('Elegí al menos una casilla para abrir.');
+      return;
+    }
+    const horasVentana = construirHorasTurno(distHoraInicio, distHoraFin);
 
-  const casillasAbiertas = [...distCasillas].map((filaIdx) => ({
-    filaIdx,
-    horas: horasVentana.filter((h) => matrizActual[filaIdx]?.[h] == null),
-  }));
+    // Solo se ofrecen al motor las horas realmente libres — nunca pisa
+    // algo que ya esté cargado a mano o por otra vía.
+    const casillasAbiertas = [...distCasillas].map((filaIdx) => ({
+      filaIdx,
+      horas: horasVentana.filter((h) => matrizActual[filaIdx]?.[h] == null),
+    }));
 
-  const poolAgentes = activosPresentes
-    .filter((x) => x.registro.vistaAsignadaHoy === selectedVistaId && x.registro.turnoPrincipal === selectedTurnoId)
-    .map((x) => x.id);
+    const poolAgentes = activosPresentes
+      .filter((x) => x.registro.vistaAsignadaHoy === selectedVistaId && x.registro.turnoPrincipal === selectedTurnoId)
+      .map((x) => x.id);
 
-  if (poolAgentes.length === 0) {
-    alert('No hay agentes disponibles en esta vista/turno para distribuir.');
-    return;
-  }
+    if (poolAgentes.length === 0) {
+      alert('No hay agentes disponibles en esta vista/turno para distribuir.');
+      return;
+    }
 
-  // Horas ya ocupadas por cada agente en CUALQUIER vista del paso —
-  // necesario para que descanso mínimo y horas máximas sean globales,
-  // no solo de la vista que se está autocompletando.
-  const horasOcupadasPorAgente = {};
-  poolAgentes.forEach((id) => {
-    const horas = new Set();
-    pasoActual.vistas.forEach((vista) => {
-      const m = matrices[matrizKey(pasoActual.id, vista.id)];
-      if (!m) return;
-      m.forEach((fila) => fila.forEach((celda, h) => { if (celda === id) horas.add(h); }));
+    const resultado = generarAsignacion({
+      agentesIds: poolAgentes,
+      casillasAbiertas,
+      ordenHoras: horasVentana,
+      permanenciaMaxima: distPermanenciaMax,
+      intervaloMinimo: distIntervaloMin,
+      filas: vistaActual.casillas.length,
     });
-    horasOcupadasPorAgente[id] = [...horas];
-  });
 
-  const resultado = generarAsignacion({
-    agentesIds: poolAgentes,
-    casillasAbiertas,
-    ordenHoras: horasVentana,
-    permanenciaMaxima: distPermanenciaMax,
-    intervaloMinimo: distIntervaloMin,
-    rachaMinima: distRachaMinima,
-    horasMaximas: distHorasMaximas,
-    filas: vistaActual.casillas.length,
-    matrizActual,
-    horasOcupadasPorAgente,
-  });
-
-  setDistResultado(resultado);
-};
+    setDistResultado(resultado);
+  };
 
   const aplicarDistribucion = () => {
     if (!distResultado) return;
@@ -1054,8 +1048,8 @@ const confirmarAccionConflicto = () => {
   };
 
   const agentesEnCasillaAhora = activosInfo.filter(
-  (x) => idsEnCasillaVistaActual.has(x.id) && x.registro.turnoPrincipal === selectedTurnoId
-);
+    (x) => idsEnCasillaVistaActual.has(x.id) && x.registro.turnoPrincipal === selectedTurnoId
+  );
 
   const colorPara = (id) => colors[Math.abs(hashCode(id)) % colors.length];
   function hashCode(str) {
@@ -1194,7 +1188,7 @@ const confirmarAccionConflicto = () => {
                       >
                         {agenteSnap && (
                           <div className={`${colorPara(celda)} text-white text-xs rounded p-1 text-center`}>
-                            {agenteSnap.apellido}
+                            {agenteSnap.apellido}{agenteSnap.nombre ? `, ${agenteSnap.nombre.charAt(0).toUpperCase()}` : ''}
                           </div>
                         )}
                       </td>
@@ -1342,22 +1336,6 @@ const confirmarAccionConflicto = () => {
                 onChange={(e) => setDistIntervaloMin(Math.max(0, Number(e.target.value)))}
                 className="border p-1 w-16"
               />
-                  <label className="text-sm">Racha mínima (hs):</label>
-<input
-  type="number"
-  min="1"
-  value={distRachaMinima}
-  onChange={(e) => setDistRachaMinima(Math.max(1, Number(e.target.value)))}
-  className="border p-1 w-16"
-/>
-<label className="text-sm">Horas máximas (hs):</label>
-<input
-  type="number"
-  min="1"
-  value={distHorasMaximas}
-  onChange={(e) => setDistHorasMaximas(Math.max(1, Number(e.target.value)))}
-  className="border p-1 w-16"
-/>
             </div>
 
             <button onClick={calcularDistribucion} className="bg-indigo-600 text-white p-2 rounded w-full mb-3">
@@ -1958,7 +1936,15 @@ const confirmarAccionConflicto = () => {
                 </tr>
               </thead>
               <tbody>
-                {vistaActual.casillas.map((casilla, filaIndex) => (
+                {/* Orden de RENDER solamente: en la vista "Salida" se muestra
+                    de mayor a menor número de casilla (las más usadas arriba),
+                    sin tocar el orden real de vista.casillas ni el filaIdx que
+                    usan matrices/motor/conflictos — cada fila sigue llevando
+                    su índice real (filaIndex) para todos los handlers. */}
+                {(vistaActual.nombre === 'Salida'
+                  ? vistaActual.casillas.map((c, i) => ({ casilla: c, filaIndex: i })).reverse()
+                  : vistaActual.casillas.map((c, i) => ({ casilla: c, filaIndex: i }))
+                ).map(({ casilla, filaIndex }) => (
                   <tr key={casilla.id}>
                     <td className="border p-2 w-32 font-bold">{casilla.nombre}</td>
                     {horasTurno.map((h, columnaIndex) => {
@@ -1981,7 +1967,7 @@ const confirmarAccionConflicto = () => {
                               draggable
                               onDragStart={(e) => manejarDragStart(e, celda, filaIndex, columnaIndex)}
                             >
-                              {identidad.apellido}
+                              {etiquetaCorta(identidad)}
                             </div>
                           )}
                           {textoAjeno && (
