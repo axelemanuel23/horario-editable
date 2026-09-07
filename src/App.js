@@ -385,6 +385,16 @@ const HorarioEditable = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matrices, pasoActual, tick]);
 
+  // nuevo, además del idsEnCasillaAhora existente (que queda igual)
+const idsEnCasillaVistaActual = useMemo(() => {
+  if (!pasoActual || !vistaActual) return new Set();
+  const matriz = matrices[matrizKey(pasoActual.id, vistaActual.id)];
+  const ids = new Set();
+  if (matriz) matriz.forEach((fila) => { if (fila[horaAbsolutaActual]) ids.add(fila[horaAbsolutaActual]); });
+  return ids;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [matrices, pasoActual, vistaActual, tick]);
+
   const horasPorAgente = useMemo(() => {
     if (!pasoActual) return new Map();
     const conteo = new Map();
@@ -872,12 +882,11 @@ const confirmarAccionConflicto = () => {
 
   const activosPresentes = activosInfo.filter((x) => !x.registro.ausente && !x.registro.retiradoHora);
 
-  const pendientes = activosPresentes.filter(
-    (x) =>
-      !x.registro.turnoPrincipal ||
-      !x.registro.equipo ||
-      (pasoActual && pasoActual.vistas.length > 1 && !x.registro.vistaPrincipal)
-  );
+  const pendientes = activosPresentes.filter((x) => {
+  if (!x.registro.turnoPrincipal) return true; // sin turno todavía: aparece en cualquier pestaña
+  if (x.registro.turnoPrincipal !== selectedTurnoId) return false; // es de otro turno, no se muestra acá
+  return !x.registro.equipo || (pasoActual.vistas.length > 1 && !x.registro.vistaPrincipal);
+});
 
   const sinTurno = activosPresentes.filter((x) => !x.registro.turnoPrincipal).length;
   const sinEquipo = activosPresentes.filter((x) => x.registro.turnoPrincipal && !x.registro.equipo).length;
@@ -1045,8 +1054,8 @@ const confirmarAccionConflicto = () => {
   };
 
   const agentesEnCasillaAhora = activosInfo.filter(
-    (x) => idsEnCasillaAhora.has(x.id) && x.registro.turnoPrincipal === selectedTurnoId
-  );
+  (x) => idsEnCasillaVistaActual.has(x.id) && x.registro.turnoPrincipal === selectedTurnoId
+);
 
   const colorPara = (id) => colors[Math.abs(hashCode(id)) % colors.length];
   function hashCode(str) {
