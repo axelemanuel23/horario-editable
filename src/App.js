@@ -1005,8 +1005,9 @@ const confirmarAccionConflicto = () => {
       const m = matrices[matrizKey(pasoActual.id, vista.id)];
       if (!m) return;
       m.forEach((fila) => fila.forEach((celda, h) => { if (celda === id) horas.add(h); }));
-    horasOcupadasPorAgente[id] = [...horas];
-  });
+      horasOcupadasPorAgente[id] = [...horas];
+      })
+  };
   const resultado = generarAsignacion({
     agentesIds: poolAgentes,
     casillasAbiertas,
@@ -1021,7 +1022,7 @@ const confirmarAccionConflicto = () => {
   });
 
   setDistResultado(resultado);
-}};
+};
 
   const aplicarDistribucion = () => {
     if (!distResultado) return;
