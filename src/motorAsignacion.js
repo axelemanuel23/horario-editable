@@ -195,7 +195,13 @@ export function generarAsignacion({
     (acc, c) => acc + c.bloques.reduce((a, b) => a + b.length, 0),
     0
   );
-  if (demandaTotal === 0) return { matriz, resumen: agentesIds.map((id) => ({ agenteId: id, horasAsignadas: estado.get(id).carga })), horasSinCubrir: 0 };
+  if (demandaTotal === 0) {
+    return {
+      matriz,
+      resumen: agentesIds.map((id) => ({ agenteId: id, horasAsignadas: estado.get(id).carga })),
+      horasSinCubrir: 0,
+    };
+  }
 
   const objetivoBruto = Math.floor(demandaTotal / agentesIds.length) || rachaMinima;
   const objetivo = Math.min(permanenciaMaxima, Math.max(rachaMinima, objetivoBruto));
