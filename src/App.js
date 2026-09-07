@@ -165,7 +165,10 @@ const HorarioEditable = () => {
   const [distPermanenciaMax, setDistPermanenciaMax] = useState(2);
   const [distIntervaloMin, setDistIntervaloMin] = useState(1);
   const [distResultado, setDistResultado] = useState(null);
+  const [distRachaMinima, setDistRachaMinima] = useState(1);
+  const [distHorasMaximas, setDistHorasMaximas] = useState(8);
 
+  
   const [snapshotConsulta, setSnapshotConsulta] = useState(null);
   const [modoEdicionConsulta, setModoEdicionConsulta] = useState(false);
   const [vistaConsultaIdx, setVistaConsultaIdx] = useState(0);
@@ -992,18 +995,33 @@ const confirmarAccionConflicto = () => {
       alert('No hay agentes disponibles en esta vista/turno para distribuir.');
       return;
     }
-
+ // Horas ya ocupadas por cada agente en CUALQUIER vista del paso —
+  // necesario para que descanso mínimo y horas máximas sean globales,
+  // no solo de la vista que se está autocompletando.
+  const horasOcupadasPorAgente = {};
+  poolAgentes.forEach((id) => {
+    const horas = new Set();
+    pasoActual.vistas.forEach((vista) => {
+      const m = matrices[matrizKey(pasoActual.id, vista.id)];
+      if (!m) return;
+      m.forEach((fila) => fila.forEach((celda, h) => { if (celda === id) horas.add(h); }));
+    horasOcupadasPorAgente[id] = [...horas];
+  });
     const resultado = generarAsignacion({
-      agentesIds: poolAgentes,
-      casillasAbiertas,
-      ordenHoras: horasVentana,
-      permanenciaMaxima: distPermanenciaMax,
-      intervaloMinimo: distIntervaloMin,
-      filas: vistaActual.casillas.length,
-    });
+    agentesIds: poolAgentes,
+    casillasAbiertas,
+    ordenHoras: horasVentana,
+    permanenciaMaxima: distPermanenciaMax,
+    intervaloMinimo: distIntervaloMin,
+    rachaMinima: distRachaMinima,
+    horasMaximas: distHorasMaximas,
+    filas: vistaActual.casillas.length,
+    matrizActual,
+    horasOcupadasPorAgente,
+  });
 
-    setDistResultado(resultado);
-  };
+  setDistResultado(resultado);
+};
 
   const aplicarDistribucion = () => {
     if (!distResultado) return;
@@ -1320,6 +1338,22 @@ const confirmarAccionConflicto = () => {
             </div>
 
             <div className="flex items-center gap-2 mb-3">
+                <label className="text-sm">Racha mínima (hs):</label>
+<input
+  type="number"
+  min="1"
+  value={distRachaMinima}
+  onChange={(e) => setDistRachaMinima(Math.max(1, Number(e.target.value)))}
+  className="border p-1 w-16"
+/>
+<label className="text-sm">Horas máximas (hs):</label>
+<input
+  type="number"
+  min="1"
+  value={distHorasMaximas}
+  onChange={(e) => setDistHorasMaximas(Math.max(1, Number(e.target.value)))}
+  className="border p-1 w-16"
+/>
               <label className="text-sm">Permanencia máxima (hs):</label>
               <input
                 type="number"
