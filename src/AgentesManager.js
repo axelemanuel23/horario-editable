@@ -32,6 +32,7 @@ const AgentesManager = () => {
   const [nuevoNombre, setNuevoNombre] = useState('');
   const [nuevoApellido, setNuevoApellido] = useState('');
   const [nuevaGuardia, setNuevaGuardia] = useState('');
+  const [filtroNombre, setFiltroNombre] = useState('');
 
   const guardarAgentes = (nuevos) => {
     setAgentes(nuevos);
@@ -40,6 +41,11 @@ const AgentesManager = () => {
 
   const pasoFiltro = pasos.find((p) => p.id === pasoFiltroId) || null;
   const agentesDelPaso = pasoFiltro ? agentes.filter((a) => a.paso === pasoFiltro.id) : [];
+  const agentesFiltrados = agentesDelPaso.filter((a) => {
+    const texto = filtroNombre.trim().toLowerCase();
+    if (!texto) return true;
+    return `${a.nombre} ${a.apellido}`.toLowerCase().includes(texto);
+  });
 
   const agregarAgente = () => {
     if (!pasoFiltro || !nuevoNombre.trim() || !nuevoApellido.trim()) return;
@@ -118,6 +124,13 @@ const AgentesManager = () => {
           ))}
         </select>
 
+        <input
+          value={filtroNombre}
+          onChange={(e) => setFiltroNombre(e.target.value)}
+          className="border p-2"
+          placeholder="Buscar por nombre o apellido..."
+        />
+
         <button onClick={exportarJSON} className="bg-green-500 text-white p-2 rounded flex items-center shadow hover:scale-105 transition-transform">
           <Download size={16} className="mr-1" /> Exportar todo (backup)
         </button>
@@ -171,7 +184,7 @@ const AgentesManager = () => {
                 </tr>
               </thead>
               <tbody>
-                {agentesDelPaso.map((agente) => (
+                {agentesFiltrados.map((agente) => (
                   <tr key={agente.id} className="border-t">
                     <td className="p-2">
                       <input
@@ -210,9 +223,11 @@ const AgentesManager = () => {
                     </td>
                   </tr>
                 ))}
-                {agentesDelPaso.length === 0 && (
+                {agentesFiltrados.length === 0 && (
                   <tr>
-                    <td colSpan={4} className="p-4 text-center text-gray-400">Sin agentes cargados todavía.</td>
+                    <td colSpan={4} className="p-4 text-center text-gray-400">
+                      {agentesDelPaso.length === 0 ? 'Sin agentes cargados todavía.' : 'Ningún agente coincide con la búsqueda.'}
+                    </td>
                   </tr>
                 )}
               </tbody>
@@ -225,4 +240,3 @@ const AgentesManager = () => {
 };
 
 export default AgentesManager;
- 
