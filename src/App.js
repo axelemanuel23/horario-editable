@@ -1006,7 +1006,8 @@ const confirmarAccionConflicto = () => {
       m.forEach((fila) => fila.forEach((celda, h) => { if (celda === id) horas.add(h); }));
     });
       horasOcupadasPorAgente[id] = [...horas];
-  };
+  });
+    
   const resultado = generarAsignacion({
     agentesIds: poolAgentes,
     casillasAbiertas,
