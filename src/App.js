@@ -167,7 +167,6 @@ const HorarioEditable = () => {
   const [distResultado, setDistResultado] = useState(null);
   const [distRachaMinima, setDistRachaMinima] = useState(1);
   const [distHorasMaximas, setDistHorasMaximas] = useState(8);
-
   
   const [snapshotConsulta, setSnapshotConsulta] = useState(null);
   const [modoEdicionConsulta, setModoEdicionConsulta] = useState(false);
@@ -1005,8 +1004,8 @@ const confirmarAccionConflicto = () => {
       const m = matrices[matrizKey(pasoActual.id, vista.id)];
       if (!m) return;
       m.forEach((fila) => fila.forEach((celda, h) => { if (celda === id) horas.add(h); }));
+    });
       horasOcupadasPorAgente[id] = [...horas];
-      })
   };
   const resultado = generarAsignacion({
     agentesIds: poolAgentes,
