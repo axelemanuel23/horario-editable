@@ -13,6 +13,7 @@ import {
   diagnosticarDrop,
   resolverTipoModal,
   aplicarResolucion,
+  DURACION_CATEGORIA,
 } from './utils/asignacionCasillas';
 
 const colors = [
@@ -61,6 +62,16 @@ function registroOperativoVacio() {
     turnoPrincipal: null,
     ausente: false,
     retiradoHora: null,
+    // Si no es null: { categoria: 'inspector'|'comisionado'|'refuerzo_medio'
+    // |'refuerzo_completo', horaInicio }. Sale del catálogo de horarios de
+    // entrada de la plantilla (ver PasoManager). Define una ventana
+    // horaria real sobre la matriz (asignacionCasillas.js ventanaHorarioDe)
+    // — no puede asignarse fuera de ese rango. turnoPrincipal se sigue
+    // guardando en paralelo (auto-derivado de la pestaña activa al elegir
+    // horario) para que los filtros que todavía no fueron migrados a leer
+    // por solapamiento de horario sigan funcionando (paneles de equipo,
+    // panel Casilla, motor automático, Excel — etapa 2 pendiente).
+    horario: null,
   };
 }
 
@@ -146,6 +157,7 @@ const HorarioEditable = () => {
 });
   const [modalCierrePendientes, setModalCierrePendientes] = useState(false);
   const [otrasVistasAbiertas, setOtrasVistasAbiertas] = useState(new Set());
+  const [barraFlotanteAbierta, setBarraFlotanteAbierta] = useState(false);
   const [selectedHorarioCasilla, setSelectedHorarioCasilla] = useState(null);
   const [horarioTexto, setHorarioTexto] = useState('');
   const [ordenamiento, setOrdenamiento] = useState('alfabetico');
@@ -154,6 +166,7 @@ const HorarioEditable = () => {
   const [guardiaElegida, setGuardiaElegida] = useState('');
   const [mostrarRefuerzo, setMostrarRefuerzo] = useState(false);
   const [filtroRefuerzo, setFiltroRefuerzo] = useState('');
+  const [agenteParaRefuerzo, setAgenteParaRefuerzo] = useState(null); // id, mientras se elige el tipo/horario
   const [mostrarCambio, setMostrarCambio] = useState(false);
   const [cambioEntraId, setCambioEntraId] = useState('');
   const [cambioSaleId, setCambioSaleId] = useState('');
@@ -465,8 +478,36 @@ const HorarioEditable = () => {
     );
   };
 
-  const confirmarRefuerzo = (agenteId) => {
-    const nuevoPorAgente = { ...operativoPaso.porAgente, [agenteId]: registroOperativoVacio() };
+  // Entradas del catálogo que corresponden a refuerzo (medio o
+  // completo) — subconjunto de horariosEntrada, filtrado por categoría.
+  const horariosRefuerzoDisponibles = (pasoActual?.horariosEntrada || []).filter(
+    (h) => h.categoria === 'refuerzo_medio' || h.categoria === 'refuerzo_completo'
+  );
+
+  // Paso 1: elegir agente. Si la plantilla tiene catálogo de horarios
+  // de refuerzo cargado, se abre un segundo paso para elegir cuál
+  // antes de confirmar; si no hay catálogo, se confirma directo sin
+  // ventana horaria (comportamiento de antes, sin romper plantillas
+  // viejas que no llegaron a cargar el catálogo).
+  const elegirAgenteParaRefuerzo = (agenteId) => {
+    if (horariosRefuerzoDisponibles.length === 0) {
+      confirmarRefuerzo(agenteId, null);
+      return;
+    }
+    setAgenteParaRefuerzo(agenteId);
+  };
+
+  const confirmarRefuerzo = (agenteId, horarioElegido) => {
+    const registro = registroOperativoVacio();
+    if (horarioElegido) {
+      registro.horario = { categoria: horarioElegido.categoria, horaInicio: horarioElegido.horaInicio };
+      // Bridging con la etapa 2 (todavía no migrada): turnoPrincipal se
+      // deriva de la pestaña activa al momento de cargarlo, para que
+      // paneles/motor/Excel que aún filtran por turnoPrincipal exacto
+      // sigan viendo a este agente en algún lado.
+      registro.turnoPrincipal = selectedTurnoId;
+    }
+    const nuevoPorAgente = { ...operativoPaso.porAgente, [agenteId]: registro };
     const movimientos = [
       ...operativoPaso.movimientos,
       { tipo: 'refuerzo', agenteId, hora: horaAbsolutaActual },
@@ -478,6 +519,7 @@ const HorarioEditable = () => {
     });
     setMostrarRefuerzo(false);
     setFiltroRefuerzo('');
+    setAgenteParaRefuerzo(null);
   };
 
   const confirmarCambio = () => {
@@ -599,6 +641,7 @@ const HorarioEditable = () => {
       vistas: pasoActual.vistas.map((v) => ({
         nombre: v.nombre,
         casillas: v.casillas.map((c) => c.nombre),
+        ordenDescendente: !!v.ordenDescendente,
         matriz: matrices[matrizKey(pasoActual.id, v.id)] || crearMatrizVacia(v.casillas.length),
       })),
       turnos: pasoActual.turnos,
@@ -612,12 +655,14 @@ const HorarioEditable = () => {
           nombre: identidad?.nombre || '?',
           apellido: identidad?.apellido || '',
           guardia: identidad?.guardia || '',
+          tipo: identidad?.tipo || 'inspector',
           equipo: registro.equipo,
           vistaPrincipal: vistaNombre,
           turnoPrincipal: turnoNombre,
           ausente: registro.ausente,
           retiradoHora: registro.retiradoHora,
           horasTrabajadas: horasPorAgente.get(id) || 0,
+          horario: registro.horario || null,
         };
       }),
       movimientos: operativoParaSnapshot.movimientos.map((m) => ({
@@ -830,9 +875,28 @@ const confirmarAccionConflicto = () => {
       pasosCount++;
     }
 
+    // Si tiene horario de entrada con ventana definida (cualquier
+    // categoría, no solo refuerzo), no se le puede sumar una hora que
+    // caiga fuera de su rango (ya entró o ya salió).
+    const registroAgente = operativoPaso.porAgente[agenteId];
+    if (registroAgente?.horario) {
+      const duracion = DURACION_CATEGORIA[registroAgente.horario.categoria] || 0;
+      const inicio = registroAgente.horario.horaInicio;
+      const fin = (inicio + duracion) % HORAS_DIA;
+      const dentroDeVentana = inicio === fin
+        ? true
+        : inicio < fin
+          ? siguiente >= inicio && siguiente < fin
+          : siguiente >= inicio || siguiente < fin;
+      if (!dentroDeVentana) {
+        alert(`Este agente tiene ventana ${etiquetaHora(inicio)} a ${etiquetaHora(fin)} — no se le puede sumar la hora ${etiquetaHora(siguiente)}.`);
+        return;
+      }
+    }
+
     if (
-      matrizEncontrada[filaEncontrada][siguiente] !== null ||
-      buscarConflicto(matrices, pasoActual, siguiente, agenteId, null, null)
+      matrizEncontrada[filaEncontrada][siguiente] === null &&
+      !buscarConflicto(matrices, pasoActual, siguiente, agenteId, null, null)
     ) {
         const aplicar = () => {
           const nuevaMatriz = matrizEncontrada.map((row) => [...row]);
@@ -894,14 +958,34 @@ const confirmarAccionConflicto = () => {
 
   const activosPresentes = activosInfo.filter((x) => !x.registro.ausente && !x.registro.retiradoHora);
 
+  // ¿Este agente vino de "+ Refuerzo" hoy? Si es así, ya pasó por su
+  // propio flujo de horario (con o sin catálogo) — no se lo vuelve a
+  // pedir acá aunque registro.horario haya quedado null (catálogo vacío).
+  const esOrigenRefuerzo = (id) =>
+    operativoPaso.movimientos.some((m) => m.tipo === 'refuerzo' && m.agenteId === id);
+
+  // ¿Le falta resolver horario de entrada (inspector/comisionado) o,
+  // en su defecto, turno (fallback si la plantilla no tiene catálogo
+  // cargado para su categoría)? Punto de entrada único para el gate de
+  // "Pendientes" y para decidir qué selector mostrar en el JSX.
+  const necesitaHorarioOTurno = (x) => {
+    if (x.registro.horario || x.registro.turnoPrincipal) return false; // ya resuelto
+    if (esOrigenRefuerzo(x.id)) return false; // ya pasó por su propio flujo
+    return true;
+  };
+
+  const categoriaHorarioDe = (identidad) => (identidad?.tipo === 'comisionado' ? 'comisionado' : 'inspector');
+  const horariosDisponiblesParaCategoria = (categoria) =>
+    (pasoActual?.horariosEntrada || []).filter((h) => h.categoria === categoria);
+
   const pendientes = activosPresentes.filter((x) => {
-    if (!x.registro.turnoPrincipal) return true; // sin turno todavía: aparece en cualquier pestaña
-    if (x.registro.turnoPrincipal !== selectedTurnoId) return false; // es de otro turno, no se muestra acá
+    if (necesitaHorarioOTurno(x)) return true; // aparece en cualquier pestaña hasta resolver esto
+    if (x.registro.turnoPrincipal && x.registro.turnoPrincipal !== selectedTurnoId) return false; // es de otro turno
     return !x.registro.equipo || (pasoActual && pasoActual.vistas.length > 1 && !x.registro.vistaPrincipal);
   });
 
-  const sinTurno = activosPresentes.filter((x) => !x.registro.turnoPrincipal).length;
-  const sinEquipo = activosPresentes.filter((x) => x.registro.turnoPrincipal && !x.registro.equipo).length;
+  const sinTurno = activosPresentes.filter((x) => necesitaHorarioOTurno(x)).length;
+  const sinEquipo = activosPresentes.filter((x) => !necesitaHorarioOTurno(x) && x.registro.turnoPrincipal && !x.registro.equipo).length;
   const sinVista =
     pasoActual && pasoActual.vistas.length > 1
       ? activosPresentes.filter((x) => x.registro.equipo && !x.registro.vistaPrincipal).length
@@ -920,6 +1004,26 @@ const confirmarAccionConflicto = () => {
     if (campo === 'equipo' && !registro.equipoOriginal) {
       nuevoRegistro.equipoOriginal = valor;
     }
+    actualizarOperativoPaso({
+      ...operativoPaso,
+      porAgente: { ...operativoPaso.porAgente, [agenteId]: nuevoRegistro },
+    });
+  };
+
+  // Asigna un horario del catálogo (inspector/comisionado) desde
+  // "Pendientes de asignar" — reemplaza al viejo selector de turno
+  // suelto. Además de guardar el horario real (con su ventana), deriva
+  // turnoPrincipal de la pestaña activa en este momento, para que los
+  // filtros que todavía no leen por solapamiento de horario (paneles,
+  // motor, Excel — etapa 2 pendiente) sigan viendo a este agente en
+  // algún lado.
+  const asignarHorarioAgente = (agenteId, horarioElegido) => {
+    const registro = operativoPaso.porAgente[agenteId] || registroOperativoVacio();
+    const nuevoRegistro = {
+      ...registro,
+      horario: { categoria: horarioElegido.categoria, horaInicio: horarioElegido.horaInicio },
+      turnoPrincipal: selectedTurnoId,
+    };
     actualizarOperativoPaso({
       ...operativoPaso,
       porAgente: { ...operativoPaso.porAgente, [agenteId]: nuevoRegistro },
@@ -1069,6 +1173,15 @@ const confirmarAccionConflicto = () => {
   const agentesEnCasillaAhora = activosInfo.filter(
     (x) => idsEnCasillaVistaActual.has(x.id) && x.registro.turnoPrincipal === selectedTurnoId
   );
+
+  // Lista chica para la barra flotante: todos los agentes arrastrables
+  // hoy visibles en los paneles de equipo + los que están en casilla
+  // ahora mismo. ordenarAgentesPorEquipo() ya excluye a estos últimos,
+  // así que no hay superposición entre ambos arrays.
+  const agentesParaBarraFlotante = [
+    ...ordenarAgentesPorEquipo().flatMap((g) => g.agentes),
+    ...agentesEnCasillaAhora,
+  ];
 
   const colorPara = (id) => colors[Math.abs(hashCode(id)) % colors.length];
   function hashCode(str) {
@@ -1224,6 +1337,39 @@ const confirmarAccionConflicto = () => {
 
   return (
     <div className="p-4 bg-gray-100 min-h-screen">
+      {/* Barra flotante: mantiene a los agentes alcanzables para arrastrar
+          incluso después de scrollear lejos de los paneles de equipo/casilla
+          (útil en filas alejadas de la matriz, donde volver a subir a
+          buscar la ficha es incómodo). Fija arriba de todo, no participa
+          del flujo normal del documento. */}
+      <div className="fixed top-0 left-0 right-0 z-40 bg-white border-b shadow-md">
+        <button
+          onClick={() => setBarraFlotanteAbierta(!barraFlotanteAbierta)}
+          className="w-full text-xs text-gray-600 py-1 flex items-center justify-center gap-1 hover:bg-gray-50"
+        >
+          {barraFlotanteAbierta ? '▲ Ocultar agentes' : `▼ Agentes rápidos (${agentesParaBarraFlotante.length})`}
+        </button>
+        {barraFlotanteAbierta && (
+          <div className="flex gap-2 overflow-x-auto p-2 border-t">
+            {agentesParaBarraFlotante.length === 0 && (
+              <span className="text-xs text-gray-400 py-1">Sin agentes disponibles en esta vista/turno ahora.</span>
+            )}
+            {agentesParaBarraFlotante.map((x) => (
+              <div
+                key={x.id}
+                className={`${colorPara(x.id)} text-white text-xs rounded px-2 py-1 whitespace-nowrap cursor-pointer shadow flex-shrink-0`}
+                draggable
+                onDragStart={(e) => manejarDragStart(e, x.id)}
+                title={`${x.identidad.apellido}, ${x.identidad.nombre} — arrastrar a una celda`}
+              >
+                {x.identidad.apellido}, {x.identidad.nombre.charAt(0).toUpperCase()}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="h-8" /> {/* separador para que la barra fija no tape el contenido de arriba */}
+
       {confirmationModal.show && (
         <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">
           <div className="bg-white p-4 rounded">
@@ -1260,7 +1406,7 @@ const confirmarAccionConflicto = () => {
               {poolDisponibleParaSumar(filtroRefuerzo).map((a) => (
                 <div
                   key={a.id}
-                  onClick={() => confirmarRefuerzo(a.id)}
+                  onClick={() => elegirAgenteParaRefuerzo(a.id)}
                   className="p-2 hover:bg-gray-100 cursor-pointer rounded"
                 >
                   {a.apellido}, {a.nombre} {a.guardia && `(Guardia ${a.guardia})`}
@@ -1268,6 +1414,40 @@ const confirmarAccionConflicto = () => {
               ))}
             </div>
             <button onClick={() => setMostrarRefuerzo(false)} className="bg-gray-300 p-2 rounded mt-2 w-full">
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {agenteParaRefuerzo && (
+        <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">
+          <div className="bg-white p-4 rounded w-96">
+            <h3 className="font-semibold mb-2">¿Qué tipo de refuerzo?</h3>
+            <p className="text-xs text-gray-500 mb-2">
+              Define la ventana horaria real para {nombreCompleto(identidadPorId(agenteParaRefuerzo))}: no
+              va a poder asignarse antes ni después de ese rango.
+            </p>
+            <div className="flex flex-col gap-2 mb-2">
+              {horariosRefuerzoDisponibles.map((h) => {
+                const duracion = DURACION_CATEGORIA[h.categoria];
+                const horaFin = (h.horaInicio + duracion) % HORAS_DIA;
+                return (
+                  <button
+                    key={h.id}
+                    onClick={() => confirmarRefuerzo(agenteParaRefuerzo, h)}
+                    className="border p-2 rounded text-left hover:bg-gray-100"
+                  >
+                    {h.categoria === 'refuerzo_completo' ? 'Completo (8hs)' : 'Medio (4hs)'} — {etiquetaHora(h.horaInicio)} a{' '}
+                    {etiquetaHora(horaFin)}
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              onClick={() => setAgenteParaRefuerzo(null)}
+              className="bg-gray-300 p-2 rounded w-full"
+            >
               Cancelar
             </button>
           </div>
@@ -1415,6 +1595,20 @@ const confirmarAccionConflicto = () => {
       {conflictoModal.show && (
   <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">
     <div className="bg-white p-4 rounded w-96">
+      {conflictoModal.tipo === 'fueraDeVentanaHorario' && (
+        <>
+          <h3 className="font-semibold mb-2">Fuera del horario de este refuerzo</h3>
+          <p className="text-sm mb-4">
+            Este agente tiene ventana {etiquetaHora(conflictoModal.diagnostico.ventanaHorario.horaInicio)} a{' '}
+            {etiquetaHora(conflictoModal.diagnostico.ventanaHorario.horaFin)} — no se lo puede asignar a las{' '}
+            {etiquetaHora(conflictoModal.dropParams.columnaDestino)}.
+          </p>
+          <button onClick={cerrarConflictoModal} className="bg-gray-300 p-2 rounded w-full">
+            Entendido
+          </button>
+        </>
+      )}
+
       {conflictoModal.tipo === 'conflictoEntrante' && (
         <>
           <h3 className="font-semibold mb-2">Ya está asignado en otra vista</h3>
@@ -1669,46 +1863,73 @@ const confirmarAccionConflicto = () => {
           {pendientes.length > 0 && (
             <div className="bg-yellow-50 border border-yellow-300 p-4 rounded shadow mb-4">
               <h3 className="font-semibold mb-2">Pendientes de asignar</h3>
-              {pendientes.map((x) => (
-                <div key={x.id} className="flex items-center gap-2 mb-2 flex-wrap">
-                  <span className="w-40">{x.identidad.apellido}, {x.identidad.nombre}</span>
-                  <select
-                    value={x.registro.turnoPrincipal || ''}
-                    onChange={(e) => asignarCampoAgente(x.id, 'turnoPrincipal', e.target.value)}
-                    className="border p-1"
-                  >
-                    <option value="">Turno...</option>
-                    {pasoActual.turnos.map((t) => (
-                      <option key={t.id} value={t.id}>{t.nombre}</option>
-                    ))}
-                  </select>
-                  <select
-                    value={x.registro.equipo || ''}
-                    onChange={(e) => asignarCampoAgente(x.id, 'equipo', e.target.value)}
-                    className="border p-1"
-                  >
-                    <option value="">Equipo...</option>
-                    {pasoActual.equipos.map((eq) => (
-                      <option key={eq} value={eq}>{eq}</option>
-                    ))}
-                  </select>
-                  {pasoActual.vistas.length > 1 && (
+              {pendientes.map((x) => {
+                const requiereHorario = necesitaHorarioOTurno(x);
+                const opcionesCatalogo = requiereHorario
+                  ? horariosDisponiblesParaCategoria(categoriaHorarioDe(x.identidad))
+                  : [];
+                return (
+                  <div key={x.id} className="flex items-center gap-2 mb-2 flex-wrap">
+                    <span className="w-40">{x.identidad.apellido}, {x.identidad.nombre}</span>
+
+                    {requiereHorario && opcionesCatalogo.length > 0 && (
+                      <select
+                        value=""
+                        onChange={(e) => {
+                          const h = opcionesCatalogo.find((op) => op.id === e.target.value);
+                          if (h) asignarHorarioAgente(x.id, h);
+                        }}
+                        className="border p-1"
+                      >
+                        <option value="">Horario de entrada...</option>
+                        {opcionesCatalogo.map((h) => (
+                          <option key={h.id} value={h.id}>{etiquetaHora(h.horaInicio)}</option>
+                        ))}
+                      </select>
+                    )}
+
+                    {requiereHorario && opcionesCatalogo.length === 0 && (
+                      <select
+                        value={x.registro.turnoPrincipal || ''}
+                        onChange={(e) => asignarCampoAgente(x.id, 'turnoPrincipal', e.target.value)}
+                        className="border p-1"
+                        title="Esta plantilla todavía no tiene horarios de entrada cargados para esta categoría (/plantillas)"
+                      >
+                        <option value="">Turno...</option>
+                        {pasoActual.turnos.map((t) => (
+                          <option key={t.id} value={t.id}>{t.nombre}</option>
+                        ))}
+                      </select>
+                    )}
+
                     <select
-                      value={x.registro.vistaPrincipal || ''}
-                      onChange={(e) => asignarCampoAgente(x.id, 'vistaPrincipal', e.target.value)}
+                      value={x.registro.equipo || ''}
+                      onChange={(e) => asignarCampoAgente(x.id, 'equipo', e.target.value)}
                       className="border p-1"
                     >
-                      <option value="">Vista...</option>
-                      {pasoActual.vistas.map((v) => (
-                        <option key={v.id} value={v.id}>{v.nombre}</option>
+                      <option value="">Equipo...</option>
+                      {pasoActual.equipos.map((eq) => (
+                        <option key={eq} value={eq}>{eq}</option>
                       ))}
                     </select>
-                  )}
-                  <button onClick={() => retirarAgente(x.id)} className="text-red-500 hover:text-red-700 ml-auto flex items-center text-sm">
-                    <LogOut size={14} className="mr-1" /> Retirar
-                  </button>
-                </div>
-              ))}
+                    {pasoActual.vistas.length > 1 && (
+                      <select
+                        value={x.registro.vistaPrincipal || ''}
+                        onChange={(e) => asignarCampoAgente(x.id, 'vistaPrincipal', e.target.value)}
+                        className="border p-1"
+                      >
+                        <option value="">Vista...</option>
+                        {pasoActual.vistas.map((v) => (
+                          <option key={v.id} value={v.id}>{v.nombre}</option>
+                        ))}
+                      </select>
+                    )}
+                    <button onClick={() => retirarAgente(x.id)} className="text-red-500 hover:text-red-700 ml-auto flex items-center text-sm">
+                      <LogOut size={14} className="mr-1" /> Retirar
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           )}
 
@@ -1884,8 +2105,10 @@ const confirmarAccionConflicto = () => {
                       <div
                         key={x.id}
                         className={`relative ${colorPara(x.id)} p-2 rounded text-white shadow cursor-pointer`}
+                        draggable
+                        onDragStart={(e) => manejarDragStart(e, x.id)}
                         onClick={() => extenderCasilla(x.id)}
-                        title="Click para sumarle la hora siguiente"
+                        title="Click para sumarle la hora siguiente, o arrastrar para moverlo a un hueco"
                       >
                         {x.identidad.apellido}, {x.identidad.nombre} ({horasPorAgente.get(x.id) || 0} h)
                         <button
@@ -1971,12 +2194,13 @@ const confirmarAccionConflicto = () => {
                 </tr>
               </thead>
               <tbody>
-                {/* Orden de RENDER solamente: en la vista "Salida" se muestra
-                    de mayor a menor número de casilla (las más usadas arriba),
-                    sin tocar el orden real de vista.casillas ni el filaIdx que
-                    usan matrices/motor/conflictos — cada fila sigue llevando
-                    su índice real (filaIndex) para todos los handlers. */}
-                {(vistaActual.nombre === 'Salida'
+                {/* Orden de RENDER solamente: si la vista tiene ordenDescendente
+                    (configurable en /plantillas), se muestra de mayor a menor
+                    número de casilla (las más usadas arriba), sin tocar el
+                    orden real de vista.casillas ni el filaIdx que usan
+                    matrices/motor/conflictos — cada fila sigue llevando su
+                    índice real (filaIndex) para todos los handlers. */}
+                {(vistaActual.ordenDescendente
                   ? vistaActual.casillas.map((c, i) => ({ casilla: c, filaIndex: i })).reverse()
                   : vistaActual.casillas.map((c, i) => ({ casilla: c, filaIndex: i }))
                 ).map(({ casilla, filaIndex }) => (
