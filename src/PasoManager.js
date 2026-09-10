@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { Plus, Trash2, ArrowLeft, Pencil, Download, Upload, Package } from 'lucide-react';
+import { DURACION_CATEGORIA } from './utils/asignacionCasillas';
 
 // =========================================================
 // MODELO DE UNA PLANTILLA (PASO)
@@ -10,9 +11,28 @@ import { Plus, Trash2, ArrowLeft, Pencil, Download, Upload, Package } from 'luci
 //   id, nombre,
 //   equipos: string[]                 // ej. ["Micro","Corredor"] o ["Micro"]
 //   guardias: string[]                 // ej. ["A","B"] — opcional, puede quedar vacío
-//   vistas: [{ id, nombre, casillas: [{ id, numero, nombre }] }]
+//   vistas: [{ id, nombre, casillas: [{ id, numero, nombre }], ordenDescendente }]
 //   turnos: [{ id, nombre, horaInicio, horaFin }]   // horas 0-23, horaFin puede cruzar medianoche
+//                                       // — ahora es solo la ventana de la GRILLA (qué pestaña/
+//                                       // columnas se ven), no define más la ventana real de
+//                                       // guardia del agente (eso lo da horariosEntrada).
+//   horariosEntrada: [{ id, categoria: 'inspector'|'comisionado'|'refuerzo_medio'|'refuerzo_completo', horaInicio }]
+//     // catálogo de horarios de entrada habituales para este paso, por
+//     // categoría (ej. "Inspector 06:00", "Refuerzo Medio 08:00"). La
+//     // duración de guardia es fija por categoría (ver DURACION_CATEGORIA
+//     // en utils/asignacionCasillas.js: inspector 10hs, comisionado 8hs,
+//     // refuerzo medio 4hs, refuerzo completo 8hs). Al cargar guardia o
+//     // sumar un agente, se elige una entrada de este catálogo según su
+//     // tipo, y la ventana resultante [horaInicio, horaInicio+duración)
+//     // pasa a ser un límite real sobre la matriz (no se lo puede asignar
+//     // antes de entrar ni después de salir) — antes esto solo existía
+//     // para refuerzos, ahora aplica a cualquier categoría.
 // }
+//
+// ordenDescendente (por vista): si está en true, la grilla de esa vista
+// se RENDERIZA de mayor a menor número de casilla (las más usadas
+// arriba) — es solo un orden de visualización, no toca vista.casillas
+// ni el filaIdx real que usan matrices/motor/conflictos.
 //
 // Si vistas.length === 1, el resto de la app no muestra pestaña de
 // sector ni "vista principal" para ese paso — no hace falta ninguna
@@ -21,14 +41,22 @@ import { Plus, Trash2, ArrowLeft, Pencil, Download, Upload, Package } from 'luci
 
 const HORAS_DEL_DIA = Array.from({ length: 24 }, (_, h) => h);
 
+const CATEGORIAS_HORARIO = [
+  { valor: 'inspector', etiqueta: `Inspector (${DURACION_CATEGORIA.inspector}hs)` },
+  { valor: 'comisionado', etiqueta: `Comisionado (${DURACION_CATEGORIA.comisionado}hs)` },
+  { valor: 'refuerzo_medio', etiqueta: `Refuerzo Medio (${DURACION_CATEGORIA.refuerzo_medio}hs)` },
+  { valor: 'refuerzo_completo', etiqueta: `Refuerzo Completo (${DURACION_CATEGORIA.refuerzo_completo}hs)` },
+];
+
 function pasoVacio() {
   return {
     id: uuidv4(),
     nombre: '',
     equipos: ['Micro'],
     guardias: [],
-    vistas: [{ id: uuidv4(), nombre: '', casillas: [] }],
+    vistas: [{ id: uuidv4(), nombre: '', casillas: [], ordenDescendente: false }],
     turnos: [],
+    horariosEntrada: [],
   };
 }
 
@@ -52,6 +80,18 @@ const PasoManager = () => {
   const editarPaso = (paso) => {
     const copia = JSON.parse(JSON.stringify(paso));
     if (!copia.guardias) copia.guardias = [];
+    if (!copia.horariosEntrada) {
+      // Compatibilidad con plantillas viejas: el catálogo de refuerzos
+      // anterior se migra al formato unificado (categoría refuerzo_medio
+      // /refuerzo_completo), sin perder lo ya cargado.
+      copia.horariosEntrada = (copia.refuerzos || []).map((r) => ({
+        id: r.id,
+        categoria: r.tipo === 'completo' ? 'refuerzo_completo' : 'refuerzo_medio',
+        horaInicio: r.horaInicio,
+      }));
+    }
+    delete copia.refuerzos;
+    copia.vistas = copia.vistas.map((v) => ({ ordenDescendente: false, ...v }));
     setEditando(copia);
   };
 
@@ -158,6 +198,27 @@ const PasoManager = () => {
     });
   const quitarTurno = (id) =>
     setEditando({ ...editando, turnos: editando.turnos.filter((t) => t.id !== id) });
+
+  const agregarHorarioEntrada = () =>
+    setEditando({
+      ...editando,
+      horariosEntrada: [...(editando.horariosEntrada || []), { id: uuidv4(), categoria: 'inspector', horaInicio: 6 }],
+    });
+  const actualizarHorarioEntrada = (id, campo, valor) =>
+    setEditando({
+      ...editando,
+      horariosEntrada: (editando.horariosEntrada || []).map((h) => (h.id === id ? { ...h, [campo]: valor } : h)),
+    });
+  const quitarHorarioEntrada = (id) =>
+    setEditando({ ...editando, horariosEntrada: (editando.horariosEntrada || []).filter((h) => h.id !== id) });
+
+  const toggleOrdenDescendente = (vistaId) =>
+    setEditando({
+      ...editando,
+      vistas: editando.vistas.map((v) =>
+        v.id === vistaId ? { ...v, ordenDescendente: !v.ordenDescendente } : v
+      ),
+    });
 
   const agregarVista = () =>
     setEditando({
@@ -376,6 +437,46 @@ const PasoManager = () => {
       </div>
 
       <div className="bg-white p-4 rounded shadow mb-4">
+        <h2 className="font-semibold mb-2">Horarios de entrada</h2>
+        <p className="text-xs text-gray-500 mb-2">
+          Catálogo de horarios habituales por categoría (ej. "Inspector 06:00", "Refuerzo Medio 08:00").
+          La duración de guardia es fija según la categoría — se muestra al lado de cada opción. Al
+          cargar guardia o sumar un agente, se elige una de estas entradas y esa ventana pasa a ser un
+          límite real sobre la matriz: no se lo puede asignar antes de entrar ni después de salir. Los
+          turnos de arriba solo definen qué columnas se ven en la grilla, ya no la ventana real del agente.
+        </p>
+        {(editando.horariosEntrada || []).map((h) => (
+          <div key={h.id} className="flex items-center gap-2 mb-2">
+            <select
+              value={h.categoria}
+              onChange={(e) => actualizarHorarioEntrada(h.id, 'categoria', e.target.value)}
+              className="border p-2"
+            >
+              {CATEGORIAS_HORARIO.map((c) => (
+                <option key={c.valor} value={c.valor}>{c.etiqueta}</option>
+              ))}
+            </select>
+            <span>desde</span>
+            <select
+              value={h.horaInicio}
+              onChange={(e) => actualizarHorarioEntrada(h.id, 'horaInicio', Number(e.target.value))}
+              className="border p-2"
+            >
+              {HORAS_DEL_DIA.map((hh) => (
+                <option key={hh} value={hh}>{String(hh).padStart(2, '0')}:00</option>
+              ))}
+            </select>
+            <button onClick={() => quitarHorarioEntrada(h.id)} className="text-red-500 hover:text-red-700">
+              <Trash2 size={16} />
+            </button>
+          </div>
+        ))}
+        <button onClick={agregarHorarioEntrada} className="bg-gray-200 p-2 rounded flex items-center mt-1 hover:bg-gray-300">
+          <Plus size={16} className="mr-1" /> Agregar horario de entrada
+        </button>
+      </div>
+
+      <div className="bg-white p-4 rounded shadow mb-4">
         <h2 className="font-semibold mb-2">
           Vistas (si el paso no maneja sectores, dejá solo una)
         </h2>
@@ -394,6 +495,15 @@ const PasoManager = () => {
                 </button>
               )}
             </div>
+
+            <label className="flex items-center gap-2 text-sm mb-2 text-gray-600">
+              <input
+                type="checkbox"
+                checked={!!vista.ordenDescendente}
+                onChange={() => toggleOrdenDescendente(vista.id)}
+              />
+              Mostrar casillas de mayor a menor número (las más usadas arriba)
+            </label>
 
             <div className="flex flex-wrap gap-2 mb-2">
               {vista.casillas.map((casilla) => (
