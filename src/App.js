@@ -439,7 +439,7 @@ const HorarioEditable = () => {
   // CARGA DE GUARDIA / INICIO DE JORNADA
   // =========================================================
 
-  const cargarGuardia = (guardiaAUsar = guardiaElegida, turnosPreset = {}) => {
+  const cargarGuardia = (guardiaAUsar = guardiaElegida, turnosPreset = {}, horariosEspecialesPreset = {}) => {
     if (!pasoActual) return;
     const guardias = pasoActual.guardias || [];
     const candidatos = agentesIdentidad.filter(
@@ -448,9 +448,40 @@ const HorarioEditable = () => {
     const porAgente = {};
     candidatos.forEach((a) => {
       const registro = registroOperativoVacio();
+      const especialPlanificadoId = horariosEspecialesPreset[a.id];
       const turnoPlanificado = turnosPreset[a.id];
-      if (turnoPlanificado) {
+
+      if (especialPlanificadoId) {
+        // Horario especial (comisionado/refuerzo/comodín): se toma tal
+        // cual del catálogo, y se deriva turnoPrincipal buscando qué
+        // turno de plantilla contiene esa hora de entrada (para que los
+        // filtros de la etapa 2, todavía basados en turnoPrincipal, lo
+        // ubiquen en alguna pestaña sin pedirle nada más al usuario).
+        const entrada = (pasoActual.horariosEntrada || []).find((h) => h.id === especialPlanificadoId);
+        if (entrada) {
+          registro.horario = { categoria: entrada.categoria, horaInicio: entrada.horaInicio };
+          const turnoContenedor = pasoActual.turnos.find((t) =>
+            construirHorasTurno(t.horaInicio, t.horaFin).includes(entrada.horaInicio)
+          );
+          registro.turnoPrincipal = turnoContenedor?.id || null;
+          if (pasoActual.vistas.length <= 1) {
+            registro.vistaPrincipal = pasoActual.vistas[0]?.id ?? null;
+            registro.vistaAsignadaHoy = registro.vistaPrincipal;
+          }
+        }
+      } else if (turnoPlanificado) {
+        const turno = pasoActual.turnos.find((t) => t.id === turnoPlanificado);
         registro.turnoPrincipal = turnoPlanificado;
+        // Con un turno principal planificado (el caso común), se
+        // resuelve también el horario real de entrada — mismo criterio
+        // que "Pendientes de asignar" en vivo: categoría según el tipo
+        // de agente, hora de entrada = inicio del turno.
+        if (turno) {
+          registro.horario = {
+            categoria: a.tipo === 'comisionado' ? 'comisionado' : 'inspector',
+            horaInicio: turno.horaInicio,
+          };
+        }
         // En pasos de una sola vista no hace falta elegir vista — se
         // ancla igual que en el flujo manual de "Pendientes de asignar".
         if (pasoActual.vistas.length <= 1) {
@@ -1790,7 +1821,7 @@ const confirmarAccionConflicto = () => {
                 <Link to="/planificacion" className="text-blue-600 underline">Planificación</Link>)
               </p>
               <button
-                onClick={() => cargarGuardia(planHoy.guardia, planHoy.turnos || {})}
+                onClick={() => cargarGuardia(planHoy.guardia, planHoy.turnos || {}, planHoy.horariosEspeciales || {})}
                 className="bg-blue-500 text-white p-2 rounded"
               >
                 Cargar guardia planificada
