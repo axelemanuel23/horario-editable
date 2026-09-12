@@ -2,43 +2,42 @@
 // MOTOR DE DISTRIBUCIÓN AUTOMÁTICA DE CASILLAS
 //
 // Pura (sin React/localStorage). Recibe el estado real de la matriz
-// (lo ya asignado a mano) y arma tandas para las horas libres,
-// respetando SIEMPRE:
-//   - permanenciaMaxima: tope de horas seguidas por tanda.
-//   - rachaMinima: piso de horas por tanda (si un tramo libre no da
-//     para una tanda mínima, queda como hueco entero).
-//   - intervaloMinimo: piso de descanso entre tandas del mismo agente.
+// (lo ya asignado a mano) y cubre las horas libres respetando SIEMPRE:
+//   - permanenciaMaxima: tope de horas seguidas por bloque/asignación
+//     en la misma casilla.
+//   - rachaMinima: piso de horas por bloque (si no se puede armar un
+//     bloque de al menos este tamaño para un agente en una celda, ese
+//     agente queda descartado para esa celda — no se lo fuerza).
+//   - intervaloMinimo: piso de descanso entre bloques del mismo agente.
 //   - horasMaximas: tope de horas totales del agente en el día,
 //     contando TODAS las vistas del paso (lo pasa el llamador).
 //   - ventanasPorAgente: ventana real de guardia de cada agente (según
-//     su horario de entrada real, o su turno como proxy si no tiene
-//     horario cargado — lo arma el llamador). Si una tanda cae aunque
-//     sea parcialmente fuera de la ventana del candidato, ese candidato
-//     queda descartado ENTERO para esa tanda (no se recorta ni se lo
-//     asigna parcial) — mismo criterio conservador que horasMaximas.
+//     su horario de entrada real, o su turno como proxy — lo arma el
+//     llamador). Ninguna hora de ningún bloque puede caer fuera de
+//     ella.
 //
-// No fuerza cobertura: ante cualquier tramo o tanda sin candidato
-// válido, queda como hueco para que el usuario lo resuelva a mano.
+// No fuerza cobertura: ante cualquier hora sin candidato válido, queda
+// como hueco para que el usuario lo resuelva a mano.
 //
-// Tamaño de tanda: en vez de ir siempre al máximo permitido, se
-// calcula un objetivo = piso(demanda total / cantidad de agentes),
-// recortado a [rachaMinima, permanenciaMaxima]. Así, si la demanda da
-// para tandas cortas, reparte entre más gente en vez de agotar el
-// máximo con unos pocos.
+// MODELO: no hay bloques fijos ni trocheo previo. Cada hora-en-casilla
+// es una celda atómica. El algoritmo procesa las celdas de a una
+// (orden MRV — ver abajo) y, al asignar, hace CRECER la racha del
+// agente elegido hacia ambos lados (bidireccional) mientras siga
+// siendo válido, aprovechando el margen real que le queda en ese
+// momento en vez de un tamaño de tanda precalculado.
 //
-// Orden de procesamiento (MRV): en vez de procesar las tandas en
-// orden cronológico fijo, en cada paso se elige la tanda con MENOS
-// candidatos factibles en ese momento (empate: la más temprana). Con
-// ventanas por agente, es común que una tanda temprana tenga varias
-// alternativas y una tanda posterior dependa de un único agente muy
-// restringido — procesar cronológicamente puede "gastar" a ese agente
-// en la tanda temprana y dejar la posterior sin nadie evitable.
+// Orden de procesamiento (MRV — minimum remaining values, técnica
+// estándar de resolución de restricciones): en cada paso se elige la
+// celda libre con MENOS candidatos factibles en ese momento (empate:
+// la más temprana). Procesar así evita que una celda con muchas
+// alternativas "gaste" a un agente que en realidad era el único que
+// podía cubrir otra celda más restringida.
 //
-// Desempate de candidatos con igual carga: prioridad fija por
-// categoría (Refuerzo Medio > Refuerzo Completo > Comisionado >
-// Inspector) — los agentes con ventana más corta/restringida se
-// asignan primero cuando hay empate, dejando a los inspectores (ventana
-// más amplia) como pool "flexible" para lo que sobre.
+// Desempate de candidatos para una misma celda: menor carga actual
+// -> bloque factible más largo (Best-Fit: aprovecha mejor el margen
+// disponible en vez de fragmentarlo) -> prioridad fija de categoría
+// (Refuerzo Medio > Refuerzo Completo > Comisionado > Inspector) ->
+// orden de agentesIds.
 // =========================================================
 
 const HORAS_DIA = 24;
@@ -91,8 +90,7 @@ function longitudRachaHaciaAdelante(horasOcupadas, desde) {
 // ¿`hora` cae dentro de la ventana [inicio, fin) circular (contempla
 // ventanas que cruzan medianoche)? Duplicada a propósito (no se
 // importa de utils/asignacionCasillas.js) para que este archivo siga
-// siendo puro y autocontenido, mismo criterio que ya usa
-// EstadisticasCasillas.js con construirHorasTurno.
+// siendo puro y autocontenido.
 function dentroDeVentanaCircular(hora, inicio, fin) {
   if (inicio == null || fin == null) return true;
   if (inicio === fin) return true;
@@ -100,59 +98,12 @@ function dentroDeVentanaCircular(hora, inicio, fin) {
   return hora >= inicio || hora < fin;
 }
 
-// Agrupa ordenHoras en bloques de horas consecutivas que estén en
-// horasLibresSet (ya filtradas contra la matriz real por el llamador
-// de esta función interna).
-function agruparBloques(ordenHoras, horasLibresSet) {
-  const bloques = [];
-  let actual = null;
-  ordenHoras.forEach((hora) => {
-    if (horasLibresSet.has(hora)) {
-      if (actual) actual.push(hora);
-      else actual = [hora];
-    } else {
-      if (actual) bloques.push(actual);
-      actual = null;
-    }
-  });
-  if (actual) bloques.push(actual);
-  return bloques;
-}
-
-// Trocea un bloque de horas consecutivas en tandas de tamaño
-// `objetivo`, respetando max y min. La última porción, si no llega al
-// mínimo, se absorbe en la tanda anterior (si entra bajo el máximo);
-// si no entra, queda como hueco.
-function trocearBloque(horas, objetivo, max, min) {
-  if (horas.length < min) {
-    return { tandas: [], horasSinCubrir: horas.length };
-  }
-  const tandas = [];
-  let cursor = 0;
-  let resto = horas.length;
-  while (resto > 0) {
-    if (resto <= max) {
-      if (resto >= min) {
-        tandas.push(horas.slice(cursor, cursor + resto));
-      } else if (tandas.length > 0 && tandas[tandas.length - 1].length + resto <= max) {
-        tandas[tandas.length - 1] = tandas[tandas.length - 1].concat(horas.slice(cursor, cursor + resto));
-      } else {
-        return { tandas, horasSinCubrir: resto };
-      }
-      cursor += resto;
-      resto = 0;
-    } else {
-      tandas.push(horas.slice(cursor, cursor + objetivo));
-      cursor += objetivo;
-      resto -= objetivo;
-    }
-  }
-  return { tandas, horasSinCubrir: 0 };
-}
-
-// ¿Puede este agente tomar la tanda completa (rango contiguo de
-// horas) sin romper permanencia máxima ni intervalo mínimo, dado su
-// set de horas ya ocupadas (en todas las vistas)?
+// ¿Puede este agente tomar el bloque completo (rango contiguo de
+// horas, ya elegido) sin romper permanencia máxima ni intervalo
+// mínimo, dado su set de horas ya ocupadas (en todas las vistas)?
+// Si el bloque queda pegado a una racha ya existente del mismo agente,
+// se cuentan juntas a los fines de permanenciaMaxima (se están
+// fusionando en una sola racha real).
 function evaluarTanda(horasOcupadas, tandaHoras, permanenciaMaxima, intervaloMinimo) {
   const inicio = tandaHoras[0];
   const fin = tandaHoras[tandaHoras.length - 1];
@@ -180,19 +131,20 @@ function evaluarTanda(horasOcupadas, tandaHoras, permanenciaMaxima, intervaloMin
 
 /**
  * @param {string[]} agentesIds - orden de prioridad para desempatar por igual carga y categoría.
- * @param {Array<{filaIdx:number, horas:number[]}>} casillasAbiertas - horas a intentar cubrir por casilla.
- * @param {number[]} ordenHoras - horas del turno, en orden cronológico.
- * @param {number} permanenciaMaxima - tope de horas seguidas por tanda.
- * @param {number} intervaloMinimo - piso de descanso entre tandas.
- * @param {number} rachaMinima - piso de horas por tanda.
+ * @param {Array<{filaIdx:number, horas:number[]}>} casillasAbiertas - horas a intentar cubrir por casilla
+ *        (ya filtradas por el llamador a las que estaban libres al momento de abrir el modal).
+ * @param {number[]} ordenHoras - horas de la franja elegida, en orden cronológico (define adyacencia).
+ * @param {number} permanenciaMaxima - tope de horas seguidas por bloque en la misma casilla.
+ * @param {number} intervaloMinimo - piso de descanso entre bloques.
+ * @param {number} rachaMinima - piso de horas por bloque.
  * @param {number} horasMaximas - tope de horas totales del agente en el día (todas las vistas).
  * @param {number} filas - cantidad de filas de la vista.
  * @param {(string|null)[][]} matrizActual - matriz real de la vista (lo ya asignado a mano).
  * @param {Object<string, number[]>} horasOcupadasPorAgente - por agente, horas donde ya está
  *        asignado en CUALQUIER vista del paso (incluida esta). Lo arma el llamador.
  * @param {Object<string, {horaInicio:number, horaFin:number}|null>} ventanasPorAgente - por
- *        agente, su ventana real de guardia (o null/ausente si no aplica restricción). Ninguna
- *        tanda puede asignársele si alguna de sus horas cae fuera de esta ventana.
+ *        agente, su ventana real de guardia (o ausente si no aplica restricción). Ninguna hora
+ *        de ningún bloque puede caer fuera de esta ventana.
  * @param {Object<string, string>} categoriasPorAgente - por agente, su categoría efectiva
  *        ('inspector'|'comisionado'|'refuerzo_medio'|'refuerzo_completo'), usada solo para
  *        desempatar candidatos con igual carga.
@@ -222,102 +174,150 @@ export function generarAsignacion({
     return { matriz, resumen: [], horasSinCubrir: 0 };
   }
 
+  const posEnFranja = new Map(ordenHoras.map((h, i) => [h, i]));
+  const horasPorCasilla = new Map(casillasAbiertas.map((c) => [c.filaIdx, new Set(c.horas)]));
+
   const estado = new Map();
   agentesIds.forEach((id) => {
     const horas = new Set(horasOcupadasPorAgente[id] || []);
     estado.set(id, { horasOcupadas: horas, carga: horas.size });
   });
 
-  // 1) Bloques de horas libres realmente abiertas, por casilla.
-  const bloquesPorCasilla = casillasAbiertas.map((c) => {
-    const horasLibresSet = new Set(
-      ordenHoras.filter((h) => c.horas.includes(h) && matriz[c.filaIdx]?.[h] == null)
-    );
-    return { filaIdx: c.filaIdx, bloques: agruparBloques(ordenHoras, horasLibresSet) };
-  });
-
-  // 2) Demanda total (horas libres crudas) -> tanda objetivo.
-  const demandaTotal = bloquesPorCasilla.reduce(
-    (acc, c) => acc + c.bloques.reduce((a, b) => a + b.length, 0),
-    0
-  );
-  if (demandaTotal === 0) {
-    return {
-      matriz,
-      resumen: agentesIds.map((id) => ({ agenteId: id, horasAsignadas: estado.get(id).carga })),
-      horasSinCubrir: 0,
-    };
-  }
-
-  const objetivoBruto = Math.floor(demandaTotal / agentesIds.length) || rachaMinima;
-  const objetivo = Math.min(permanenciaMaxima, Math.max(rachaMinima, objetivoBruto));
-
-  // 3) Trocear cada bloque en tandas del tamaño objetivo.
   let horasSinCubrir = 0;
-  const tandasAAsignar = []; // { filaIdx, horas: number[] }
-  bloquesPorCasilla.forEach(({ filaIdx, bloques }) => {
-    bloques.forEach((bloque) => {
-      const { tandas, horasSinCubrir: sinCubrirBloque } = trocearBloque(bloque, objetivo, permanenciaMaxima, rachaMinima);
-      horasSinCubrir += sinCubrirBloque;
-      tandas.forEach((horas) => tandasAAsignar.push({ filaIdx, horas }));
-    });
-  });
+  const excluidas = new Set(); // `${filaIdx}:${hora}` ya descartadas (nadie puede cubrirlas)
+  const claveCelda = (filaIdx, hora) => `${filaIdx}:${hora}`;
 
-  // 4) MRV: en cada paso se elige la tanda con menos candidatos
-  // factibles en ese momento (empate: la más temprana), no la primera
-  // en orden cronológico — ver nota en el header del archivo.
-  const calcularCandidatos = (horas) =>
-    agentesIds.filter((id) => {
-      const est = estado.get(id);
-      if (horas.some((h) => est.horasOcupadas.has(h))) return false; // ya ocupado a esa hora en otro lado
-      if (est.carga + horas.length > horasMaximas) return false;
-      const ventana = ventanasPorAgente[id];
-      if (ventana && horas.some((h) => !dentroDeVentanaCircular(h, ventana.horaInicio, ventana.horaFin))) {
-        return false; // se saldría de su ventana real de guardia
-      }
+  // Corrida máxima contigua (en posiciones de ordenHoras) de horas
+  // elegibles-y-libres en `filaIdx`, alrededor de la posición `posH`.
+  // Define el límite físico dentro del cual un bloque puede crecer en
+  // esta casilla, sin todavía considerar reglas propias del agente.
+  const corridaLibreEnCasilla = (filaIdx, posH) => {
+    const horasCasilla = horasPorCasilla.get(filaIdx);
+    const libre = (pos) => {
+      if (pos < 0 || pos >= ordenHoras.length) return false;
+      const h = ordenHoras[pos];
+      if (!horasCasilla.has(h)) return false;
+      if (matriz[filaIdx][h] != null) return false;
+      if (excluidas.has(claveCelda(filaIdx, h))) return false;
+      return true;
+    };
+    let lo = posH;
+    while (libre(lo - 1)) lo--;
+    let hi = posH;
+    while (libre(hi + 1)) hi++;
+    return { lo, hi };
+  };
+
+  // Bloque máximo factible para `agenteId` que incluya la hora `h` en
+  // `filaIdx`: arranca en esa única hora y crece de a una hora por vez
+  // hacia ambos lados (bidireccional) mientras siga siendo válido
+  // (ventana, margen de horasMaximas, permanenciaMaxima, intervaloMinimo
+  // — vía evaluarTanda) y no se salga de la corrida libre física de la
+  // casilla. Devuelve null si ni una hora sola es factible, o si el
+  // máximo alcanzado no llega a rachaMinima.
+  const maxBloqueFactible = (agenteId, filaIdx, h) => {
+    const est = estado.get(agenteId);
+    if (est.horasOcupadas.has(h)) return null; // ya ocupado a esa hora en otro lado
+    const ventana = ventanasPorAgente[agenteId];
+    if (ventana && !dentroDeVentanaCircular(h, ventana.horaInicio, ventana.horaFin)) return null;
+
+    const posH = posEnFranja.get(h);
+    const { lo, hi } = corridaLibreEnCasilla(filaIdx, posH);
+    const margen = horasMaximas - est.carga;
+    if (margen < 1) return null;
+
+    const rangoHoras = (a, b) => {
+      const arr = [];
+      for (let p = a; p <= b; p++) arr.push(ordenHoras[p]);
+      return arr;
+    };
+
+    const factible = (a, b) => {
+      if (b - a + 1 > margen) return false;
+      const horas = rangoHoras(a, b);
+      if (horas.some((hh) => est.horasOcupadas.has(hh))) return false; // doble reserva del agente
+      if (ventana && horas.some((hh) => !dentroDeVentanaCircular(hh, ventana.horaInicio, ventana.horaFin))) return false;
       return evaluarTanda(est.horasOcupadas, horas, permanenciaMaxima, intervaloMinimo);
-    });
+    };
 
-  const ordenarCandidatos = (candidatos) =>
-    [...candidatos].sort((a, b) => {
-      const diffCarga = estado.get(a).carga - estado.get(b).carga;
-      if (diffCarga !== 0) return diffCarga;
-      const diffCategoria = prioridadCategoria(categoriasPorAgente[a]) - prioridadCategoria(categoriasPorAgente[b]);
-      if (diffCategoria !== 0) return diffCategoria;
-      return agentesIds.indexOf(a) - agentesIds.indexOf(b);
-    });
+    if (!factible(posH, posH)) return null;
 
-  const pendientes = [...tandasAAsignar];
-  while (pendientes.length > 0) {
-    let mejorIdx = 0;
-    let mejorCandidatos = calcularCandidatos(pendientes[0].horas);
-    for (let i = 1; i < pendientes.length; i++) {
-      const candidatos = calcularCandidatos(pendientes[i].horas);
-      const esMasRestringida =
-        candidatos.length < mejorCandidatos.length ||
-        (candidatos.length === mejorCandidatos.length &&
-          ordenHoras.indexOf(pendientes[i].horas[0]) < ordenHoras.indexOf(pendientes[mejorIdx].horas[0]));
-      if (esMasRestringida) {
-        mejorIdx = i;
-        mejorCandidatos = candidatos;
+    let loPos = posH;
+    let hiPos = posH;
+    let siguioCreciendo = true;
+    while (siguioCreciendo) {
+      siguioCreciendo = false;
+      if (loPos - 1 >= lo && factible(loPos - 1, hiPos)) {
+        loPos--;
+        siguioCreciendo = true;
+      }
+      if (hiPos + 1 <= hi && factible(loPos, hiPos + 1)) {
+        hiPos++;
+        siguioCreciendo = true;
       }
     }
 
-    const { filaIdx, horas } = pendientes[mejorIdx];
-    pendientes.splice(mejorIdx, 1);
+    const horasFinal = rangoHoras(loPos, hiPos);
+    if (horasFinal.length < rachaMinima) return null;
+    return horasFinal;
+  };
 
-    if (mejorCandidatos.length === 0) {
-      horasSinCubrir += horas.length;
+  const candidatosParaCelda = (filaIdx, h) => {
+    const resultados = [];
+    agentesIds.forEach((id) => {
+      const bloque = maxBloqueFactible(id, filaIdx, h);
+      if (bloque) resultados.push({ id, bloque });
+    });
+    return resultados;
+  };
+
+  // Bucle principal: MRV puro, sin trocheo previo. En cada paso se
+  // procesa la celda libre con MENOS candidatos factibles restantes.
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const celdasLibres = [];
+    casillasAbiertas.forEach((c) => {
+      const horasCasilla = horasPorCasilla.get(c.filaIdx);
+      ordenHoras.forEach((h) => {
+        if (!horasCasilla.has(h)) return;
+        if (matriz[c.filaIdx][h] != null) return;
+        if (excluidas.has(claveCelda(c.filaIdx, h))) return;
+        celdasLibres.push({ filaIdx: c.filaIdx, hora: h });
+      });
+    });
+    if (celdasLibres.length === 0) break;
+
+    let mejor = null;
+    celdasLibres.forEach(({ filaIdx, hora }) => {
+      const candidatos = candidatosParaCelda(filaIdx, hora);
+      if (!mejor || candidatos.length < mejor.candidatos.length) {
+        mejor = { filaIdx, hora, candidatos };
+      }
+    });
+
+    if (mejor.candidatos.length === 0) {
+      excluidas.add(claveCelda(mejor.filaIdx, mejor.hora));
+      horasSinCubrir += 1;
       continue;
     }
 
-    const elegido = ordenarCandidatos(mejorCandidatos)[0];
-    const est = estado.get(elegido);
-    horas.forEach((h) => {
-      matriz[filaIdx][h] = elegido;
+    mejor.candidatos.sort((a, b) => {
+      const estA = estado.get(a.id);
+      const estB = estado.get(b.id);
+      if (estA.carga !== estB.carga) return estA.carga - estB.carga;
+      if (a.bloque.length !== b.bloque.length) return b.bloque.length - a.bloque.length; // bloque más largo primero
+      const diffCategoria = prioridadCategoria(categoriasPorAgente[a.id]) - prioridadCategoria(categoriasPorAgente[b.id]);
+      if (diffCategoria !== 0) return diffCategoria;
+      return agentesIds.indexOf(a.id) - agentesIds.indexOf(b.id);
+    });
+
+    const elegido = mejor.candidatos[0];
+    const est = estado.get(elegido.id);
+    elegido.bloque.forEach((h) => {
+      matriz[mejor.filaIdx][h] = elegido.id;
       est.horasOcupadas.add(h);
     });
-    est.carga += horas.length;
+    est.carga += elegido.bloque.length;
   }
 
   const resumen = agentesIds.map((id) => ({ agenteId: id, horasAsignadas: estado.get(id).carga }));
