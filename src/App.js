@@ -181,7 +181,6 @@ const HorarioEditable = () => {
   const [distResultado, setDistResultado] = useState(null);
   const [distRachaMinima, setDistRachaMinima] = useState(1);
   const [distHorasMaximas, setDistHorasMaximas] = useState(8);
-  const [distHorasMaximas, setDistHorasMaximas] = useState(8);
   const [distIncluirComisionados, setDistIncluirComisionados] = useState(true);
   const [distIncluirRefuerzos, setDistIncluirRefuerzos] = useState(false);
   
