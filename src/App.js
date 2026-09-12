@@ -14,6 +14,7 @@ import {
   resolverTipoModal,
   aplicarResolucion,
   DURACION_CATEGORIA,
+  dentroDeVentanaCircular,
 } from './utils/asignacionCasillas';
 
 const colors = [
