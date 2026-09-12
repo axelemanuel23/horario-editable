@@ -181,6 +181,9 @@ const HorarioEditable = () => {
   const [distResultado, setDistResultado] = useState(null);
   const [distRachaMinima, setDistRachaMinima] = useState(1);
   const [distHorasMaximas, setDistHorasMaximas] = useState(8);
+  const [distHorasMaximas, setDistHorasMaximas] = useState(8);
+  const [distIncluirComisionados, setDistIncluirComisionados] = useState(true);
+  const [distIncluirRefuerzos, setDistIncluirRefuerzos] = useState(false);
   
   const [snapshotConsulta, setSnapshotConsulta] = useState(null);
   const [modoEdicionConsulta, setModoEdicionConsulta] = useState(false);
@@ -1108,6 +1111,36 @@ const confirmarAccionConflicto = () => {
     setDistCasillas(copia);
   };
 
+    // Categoría "real" del agente a los fines del filtro de distribución:
+  // si tiene un horario de refuerzo cargado, ESA es la categoría que
+  // importa (aunque su identidad diga tipo=inspector) — el refuerzo es
+  // lo que define su ventana real hoy.
+  const categoriaEfectivaDe = (agenteId) => {
+    const registro = operativoPaso.porAgente[agenteId];
+    if (registro?.horario?.categoria?.startsWith('refuerzo')) return registro.horario.categoria;
+    const identidad = identidadPorId(agenteId);
+    return identidad?.tipo === 'comisionado' ? 'comisionado' : 'inspector';
+  };
+
+  // Ventana real de guardia de un agente: si tiene horario de entrada
+  // cargado (catálogo), sale de ahí. Si no (plantillas sin catálogo, o
+  // asignado por turno suelto desde "Pendientes"), se usa la ventana de
+  // su turno principal como proxy — así todo agente resuelto tiene
+  // alguna ventana contra la que comparar la franja elegida acá.
+  const ventanaRealDeAgente = (registro) => {
+    if (registro?.horario) {
+      const duracion = DURACION_CATEGORIA[registro.horario.categoria] || 0;
+      if (duracion) {
+        return {
+          horaInicio: registro.horario.horaInicio,
+          horaFin: (registro.horario.horaInicio + duracion) % HORAS_DIA,
+        };
+      }
+    }
+    const turno = pasoActual.turnos.find((t) => t.id === registro?.turnoPrincipal);
+    return turno ? { horaInicio: turno.horaInicio, horaFin: turno.horaFin } : null;
+  };
+
   const calcularDistribucion = () => {
     if (distCasillas.size === 0) {
       alert('Elegí al menos una casilla para abrir.');
@@ -1122,43 +1155,67 @@ const confirmarAccionConflicto = () => {
       horas: horasVentana.filter((h) => matrizActual[filaIdx]?.[h] == null),
     }));
 
-    const poolAgentes = activosPresentes
-      .filter((x) => x.registro.vistaAsignadaHoy === selectedVistaId && x.registro.turnoPrincipal === selectedTurnoId)
-      .map((x) => x.id);
+    // Pool "estilo Venn": en vez de exigir turnoPrincipal exacto, entra
+    // cualquier agente presente hoy en esta vista cuya ventana real de
+    // guardia solape con la franja elegida para esta corrida — así un
+    // comodín que cruza dos turnos aparece igual, sin depender de en
+    // qué pestaña se lo cargó. El motor recibe su ventana COMPLETA (no
+    // recortada a la franja) y nunca lo asigna fuera de ella ni en
+    // horas que ya tenga ocupadas en otro lado (eso ya lo hace
+    // horasOcupadasPorAgente, sin cambios).
+    const poolInfo = activosPresentes
+      .filter((x) => x.registro.vistaAsignadaHoy === selectedVistaId)
+      .map((x) => ({ ...x, ventana: ventanaRealDeAgente(x.registro), categoria: categoriaEfectivaDe(x.id) }))
+      .filter(
+        (x) => x.ventana && horasVentana.some((h) => dentroDeVentanaCircular(h, x.ventana.horaInicio, x.ventana.horaFin))
+      )
+      .filter((x) => {
+        if (x.categoria === 'comisionado') return distIncluirComisionados;
+        if (x.categoria === 'refuerzo_medio' || x.categoria === 'refuerzo_completo') return distIncluirRefuerzos;
+        return true; // inspector siempre entra
+      });
 
-    if (poolAgentes.length === 0) {
-      alert('No hay agentes disponibles en esta vista/turno para distribuir.');
+    if (poolInfo.length === 0) {
+      alert('No hay agentes disponibles en esta vista para la franja horaria y categorías elegidas.');
       return;
     }
- // Horas ya ocupadas por cada agente en CUALQUIER vista del paso —
-  // necesario para que descanso mínimo y horas máximas sean globales,
-  // no solo de la vista que se está autocompletando.
-  const horasOcupadasPorAgente = {};
-  poolAgentes.forEach((id) => {
-    const horas = new Set();
-    pasoActual.vistas.forEach((vista) => {
-      const m = matrices[matrizKey(pasoActual.id, vista.id)];
-      if (!m) return;
-      m.forEach((fila) => fila.forEach((celda, h) => { if (celda === id) horas.add(h); }));
-    });
-      horasOcupadasPorAgente[id] = [...horas];
-  });
-    
-  const resultado = generarAsignacion({
-    agentesIds: poolAgentes,
-    casillasAbiertas,
-    ordenHoras: horasVentana,
-    permanenciaMaxima: distPermanenciaMax,
-    intervaloMinimo: distIntervaloMin,
-    rachaMinima: distRachaMinima,
-    horasMaximas: distHorasMaximas,
-    filas: vistaActual.casillas.length,
-    matrizActual,
-    horasOcupadasPorAgente,
-  });
 
-  setDistResultado(resultado);
-};
+    const poolAgentes = poolInfo.map((x) => x.id);
+    const ventanasPorAgente = Object.fromEntries(poolInfo.map((x) => [x.id, x.ventana]));
+    const categoriasPorAgente = Object.fromEntries(poolInfo.map((x) => [x.id, x.categoria]));
+
+    // Horas ya ocupadas por cada agente en CUALQUIER vista del paso —
+    // necesario para que descanso mínimo y horas máximas sean globales,
+    // y para que el motor "respete las horas que ya hizo": esas horas
+    // quedan bloqueadas para él sin importar su ventana.
+    const horasOcupadasPorAgente = {};
+    poolAgentes.forEach((id) => {
+      const horas = new Set();
+      pasoActual.vistas.forEach((vista) => {
+        const m = matrices[matrizKey(pasoActual.id, vista.id)];
+        if (!m) return;
+        m.forEach((fila) => fila.forEach((celda, h) => { if (celda === id) horas.add(h); }));
+      });
+      horasOcupadasPorAgente[id] = [...horas];
+    });
+
+    const resultado = generarAsignacion({
+      agentesIds: poolAgentes,
+      casillasAbiertas,
+      ordenHoras: horasVentana,
+      permanenciaMaxima: distPermanenciaMax,
+      intervaloMinimo: distIntervaloMin,
+      rachaMinima: distRachaMinima,
+      horasMaximas: distHorasMaximas,
+      filas: vistaActual.casillas.length,
+      matrizActual,
+      horasOcupadasPorAgente,
+      ventanasPorAgente,
+      categoriasPorAgente,
+    });
+
+    setDistResultado(resultado);
+  };
 
   const aplicarDistribucion = () => {
     if (!distResultado) return;
@@ -1516,9 +1573,13 @@ const confirmarAccionConflicto = () => {
         <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center overflow-y-auto py-8">
           <div className="bg-white p-4 rounded w-full max-w-lg">
             <h3 className="font-semibold mb-2">Distribución automática</h3>
-            <p className="text-xs text-gray-500 mb-3">
-              Reparte agentes de esta vista/turno en las casillas y horario que elijas. Solo llena horas libres — no
-              pisa nada ya cargado. El resultado puede no salir perfectamente parejo (son topes, no valores fijos).
+                        <p className="text-xs text-gray-500 mb-3">
+              Reparte agentes de esta vista en las casillas y franja horaria que elijas. Entra cualquier
+              agente presente hoy en esta vista cuya ventana real de guardia se solape con la franja (no
+              hace falta que coincida con la pestaña de turno abierta) — el motor nunca lo asigna fuera de
+              su propia ventana ni en horas que ya tenga ocupadas en otro lado. Solo llena horas libres —
+              no pisa nada ya cargado. El resultado puede no salir perfectamente parejo (son topes, no
+              valores fijos).
             </p>
 
             <label className="block text-sm font-semibold mb-1">Casillas a abrir</label>
@@ -1548,6 +1609,25 @@ const confirmarAccionConflicto = () => {
                   <option key={h} value={h}>{etiquetaHora(h)}</option>
                 ))}
               </select>
+            </div>
+
+            <div className="flex items-center gap-4 mb-3 text-sm">
+              <label className="flex items-center gap-1">
+                <input
+                  type="checkbox"
+                  checked={distIncluirComisionados}
+                  onChange={(e) => setDistIncluirComisionados(e.target.checked)}
+                />
+                Incluir comisionados
+              </label>
+              <label className="flex items-center gap-1">
+                <input
+                  type="checkbox"
+                  checked={distIncluirRefuerzos}
+                  onChange={(e) => setDistIncluirRefuerzos(e.target.checked)}
+                />
+                Incluir refuerzos
+              </label>
             </div>
 
             <div className="flex items-center gap-2 mb-3">
