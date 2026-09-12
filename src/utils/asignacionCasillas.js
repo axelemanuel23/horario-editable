@@ -65,7 +65,7 @@ export function verificarHorasConsecutivas(matriz, columnaAbsoluta, agenteId) {
 // ¿`hora` cae dentro de la ventana [inicio, fin) circular (contempla
 // turnos que cruzan medianoche)? Sin ventana definida (null), no hay
 // restricción.
-function dentroDeVentanaCircular(hora, inicio, fin) {
+export function dentroDeVentanaCircular(hora, inicio, fin) {
   if (inicio == null || fin == null) return true;
   if (inicio === fin) return true; // ventana de 24hs completas
   if (inicio < fin) return hora >= inicio && hora < fin;
