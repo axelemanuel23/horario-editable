@@ -10,6 +10,12 @@
 //   - intervaloMinimo: piso de descanso entre tandas del mismo agente.
 //   - horasMaximas: tope de horas totales del agente en el día,
 //     contando TODAS las vistas del paso (lo pasa el llamador).
+//   - ventanasPorAgente: ventana real de guardia de cada agente (según
+//     su horario de entrada real, o su turno como proxy si no tiene
+//     horario cargado — lo arma el llamador). Si una tanda cae aunque
+//     sea parcialmente fuera de la ventana del candidato, ese candidato
+//     queda descartado ENTERO para esa tanda (no se recorta ni se lo
+//     asigna parcial) — mismo criterio conservador que horasMaximas.
 //
 // No fuerza cobertura: ante cualquier tramo o tanda sin candidato
 // válido, queda como hueco para que el usuario lo resuelva a mano.
@@ -19,9 +25,30 @@
 // recortado a [rachaMinima, permanenciaMaxima]. Así, si la demanda da
 // para tandas cortas, reparte entre más gente en vez de agotar el
 // máximo con unos pocos.
+//
+// Orden de procesamiento (MRV): en vez de procesar las tandas en
+// orden cronológico fijo, en cada paso se elige la tanda con MENOS
+// candidatos factibles en ese momento (empate: la más temprana). Con
+// ventanas por agente, es común que una tanda temprana tenga varias
+// alternativas y una tanda posterior dependa de un único agente muy
+// restringido — procesar cronológicamente puede "gastar" a ese agente
+// en la tanda temprana y dejar la posterior sin nadie evitable.
+//
+// Desempate de candidatos con igual carga: prioridad fija por
+// categoría (Refuerzo Medio > Refuerzo Completo > Comisionado >
+// Inspector) — los agentes con ventana más corta/restringida se
+// asignan primero cuando hay empate, dejando a los inspectores (ventana
+// más amplia) como pool "flexible" para lo que sobre.
 // =========================================================
 
 const HORAS_DIA = 24;
+
+const PRIORIDAD_CATEGORIA = ['refuerzo_medio', 'refuerzo_completo', 'comisionado', 'inspector'];
+
+function prioridadCategoria(categoria) {
+  const idx = PRIORIDAD_CATEGORIA.indexOf(categoria);
+  return idx === -1 ? PRIORIDAD_CATEGORIA.length : idx; // categoría desconocida: al final, sin romper
+}
 
 function mod(n, m) {
   return ((n % m) + m) % m;
@@ -59,6 +86,18 @@ function longitudRachaHaciaAdelante(horasOcupadas, desde) {
     i = mod(i + 1, HORAS_DIA);
   }
   return largo;
+}
+
+// ¿`hora` cae dentro de la ventana [inicio, fin) circular (contempla
+// ventanas que cruzan medianoche)? Duplicada a propósito (no se
+// importa de utils/asignacionCasillas.js) para que este archivo siga
+// siendo puro y autocontenido, mismo criterio que ya usa
+// EstadisticasCasillas.js con construirHorasTurno.
+function dentroDeVentanaCircular(hora, inicio, fin) {
+  if (inicio == null || fin == null) return true;
+  if (inicio === fin) return true;
+  if (inicio < fin) return hora >= inicio && hora < fin;
+  return hora >= inicio || hora < fin;
 }
 
 // Agrupa ordenHoras en bloques de horas consecutivas que estén en
@@ -140,7 +179,7 @@ function evaluarTanda(horasOcupadas, tandaHoras, permanenciaMaxima, intervaloMin
 }
 
 /**
- * @param {string[]} agentesIds - orden de prioridad para desempatar por igual carga.
+ * @param {string[]} agentesIds - orden de prioridad para desempatar por igual carga y categoría.
  * @param {Array<{filaIdx:number, horas:number[]}>} casillasAbiertas - horas a intentar cubrir por casilla.
  * @param {number[]} ordenHoras - horas del turno, en orden cronológico.
  * @param {number} permanenciaMaxima - tope de horas seguidas por tanda.
@@ -150,8 +189,13 @@ function evaluarTanda(horasOcupadas, tandaHoras, permanenciaMaxima, intervaloMin
  * @param {number} filas - cantidad de filas de la vista.
  * @param {(string|null)[][]} matrizActual - matriz real de la vista (lo ya asignado a mano).
  * @param {Object<string, number[]>} horasOcupadasPorAgente - por agente, horas donde ya está
- *        asignado en CUALQUIER vista del paso (incluida esta). Lo arma el llamador, que es quien
- *        conoce la estructura de vistas/pasos.
+ *        asignado en CUALQUIER vista del paso (incluida esta). Lo arma el llamador.
+ * @param {Object<string, {horaInicio:number, horaFin:number}|null>} ventanasPorAgente - por
+ *        agente, su ventana real de guardia (o null/ausente si no aplica restricción). Ninguna
+ *        tanda puede asignársele si alguna de sus horas cae fuera de esta ventana.
+ * @param {Object<string, string>} categoriasPorAgente - por agente, su categoría efectiva
+ *        ('inspector'|'comisionado'|'refuerzo_medio'|'refuerzo_completo'), usada solo para
+ *        desempatar candidatos con igual carga.
  *
  * @returns {{ matriz, resumen: {agenteId,horasAsignadas}[], horasSinCubrir: number }}
  */
@@ -166,6 +210,8 @@ export function generarAsignacion({
   filas,
   matrizActual,
   horasOcupadasPorAgente = {},
+  ventanasPorAgente = {},
+  categoriasPorAgente = {},
 }) {
   const matriz = matrizActual
     ? matrizActual.map((fila) => [...fila])
@@ -217,37 +263,62 @@ export function generarAsignacion({
     });
   });
 
-  // 4) Procesar tandas en orden cronológico (por su hora de inicio),
-  // para que decisiones tempranas condicionen correctamente a las
-  // siguientes, sin importar de qué casilla vengan.
-  tandasAAsignar.sort((a, b) => ordenHoras.indexOf(a.horas[0]) - ordenHoras.indexOf(b.horas[0]));
-
-  tandasAAsignar.forEach(({ filaIdx, horas }) => {
-    const candidatos = agentesIds.filter((id) => {
+  // 4) MRV: en cada paso se elige la tanda con menos candidatos
+  // factibles en ese momento (empate: la más temprana), no la primera
+  // en orden cronológico — ver nota en el header del archivo.
+  const calcularCandidatos = (horas) =>
+    agentesIds.filter((id) => {
       const est = estado.get(id);
       if (horas.some((h) => est.horasOcupadas.has(h))) return false; // ya ocupado a esa hora en otro lado
       if (est.carga + horas.length > horasMaximas) return false;
+      const ventana = ventanasPorAgente[id];
+      if (ventana && horas.some((h) => !dentroDeVentanaCircular(h, ventana.horaInicio, ventana.horaFin))) {
+        return false; // se saldría de su ventana real de guardia
+      }
       return evaluarTanda(est.horasOcupadas, horas, permanenciaMaxima, intervaloMinimo);
     });
 
-    if (candidatos.length === 0) {
-      horasSinCubrir += horas.length;
-      return;
-    }
-
-    candidatos.sort((a, b) => {
-      const diff = estado.get(a).carga - estado.get(b).carga;
-      return diff !== 0 ? diff : agentesIds.indexOf(a) - agentesIds.indexOf(b);
+  const ordenarCandidatos = (candidatos) =>
+    [...candidatos].sort((a, b) => {
+      const diffCarga = estado.get(a).carga - estado.get(b).carga;
+      if (diffCarga !== 0) return diffCarga;
+      const diffCategoria = prioridadCategoria(categoriasPorAgente[a]) - prioridadCategoria(categoriasPorAgente[b]);
+      if (diffCategoria !== 0) return diffCategoria;
+      return agentesIds.indexOf(a) - agentesIds.indexOf(b);
     });
 
-    const elegido = candidatos[0];
+  const pendientes = [...tandasAAsignar];
+  while (pendientes.length > 0) {
+    let mejorIdx = 0;
+    let mejorCandidatos = calcularCandidatos(pendientes[0].horas);
+    for (let i = 1; i < pendientes.length; i++) {
+      const candidatos = calcularCandidatos(pendientes[i].horas);
+      const esMasRestringida =
+        candidatos.length < mejorCandidatos.length ||
+        (candidatos.length === mejorCandidatos.length &&
+          ordenHoras.indexOf(pendientes[i].horas[0]) < ordenHoras.indexOf(pendientes[mejorIdx].horas[0]));
+      if (esMasRestringida) {
+        mejorIdx = i;
+        mejorCandidatos = candidatos;
+      }
+    }
+
+    const { filaIdx, horas } = pendientes[mejorIdx];
+    pendientes.splice(mejorIdx, 1);
+
+    if (mejorCandidatos.length === 0) {
+      horasSinCubrir += horas.length;
+      continue;
+    }
+
+    const elegido = ordenarCandidatos(mejorCandidatos)[0];
     const est = estado.get(elegido);
     horas.forEach((h) => {
       matriz[filaIdx][h] = elegido;
       est.horasOcupadas.add(h);
     });
     est.carga += horas.length;
-  });
+  }
 
   const resumen = agentesIds.map((id) => ({ agenteId: id, horasAsignadas: estado.get(id).carga }));
   return { matriz, resumen, horasSinCubrir };
